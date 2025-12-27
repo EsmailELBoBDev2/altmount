@@ -239,7 +239,6 @@ func (s *Service) Stop(ctx context.Context) error {
 
 	// Release lock BEFORE waiting to avoid deadlock
 	// Workers call IsPaused() which needs this lock
-	s.mu.Unlock()
 
 	// Wait for all goroutines to finish with timeout
 	done := make(chan struct{})
@@ -260,12 +259,9 @@ func (s *Service) Stop(ctx context.Context) error {
 
 	// Re-acquire lock to update state
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	// Recreate context for potential restart
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	s.mu.Unlock()
 
 	s.log.InfoContext(ctx, "NZB import service stopped")
 
