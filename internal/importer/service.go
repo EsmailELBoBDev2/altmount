@@ -1012,8 +1012,11 @@ func (s *Service) processQueueItems(ctx context.Context, workerID int) {
 
 	// Protected processing to ensure panic handling updates item status
 	func() {
-		// Create cancellable context for this item
-		itemCtx, cancel := context.WithCancel(ctx)
+		// Create cancellable context with HARD TIMEOUT for this item
+		// This ensures processing doesn't hang indefinitely even if the rardecode
+		// library doesn't respect context cancellation
+		processingTimeout := 15 * time.Minute
+		itemCtx, cancel := context.WithTimeout(ctx, processingTimeout)
 
 		// Defer panic recovery to ensure item is not stuck in processing
 		defer func() {
@@ -1246,12 +1249,18 @@ func (s *Service) handleProcessingSuccess(ctx context.Context, item *database.Im
 func (s *Service) handleProcessingFailure(ctx context.Context, item *database.ImportQueueItem, processingErr error) {
 	errorMessage := processingErr.Error()
 
-	// Check if the error was due to cancellation
+	// Check if the error was due to cancellation or timeout
 	if strings.Contains(errorMessage, "context canceled") || strings.Contains(errorMessage, "processing cancelled") {
 		errorMessage = "Processing cancelled by user request"
 		s.log.InfoContext(ctx, "Processing cancelled by user",
 			"queue_id", item.ID,
 			"file", item.NzbPath)
+	} else if strings.Contains(errorMessage, "context deadline exceeded") || strings.Contains(errorMessage, "deadline exceeded") {
+		errorMessage = "Processing timed out (exceeded 15 minute limit)"
+		s.log.ErrorContext(ctx, "Processing timed out",
+			"queue_id", item.ID,
+			"file", item.NzbPath,
+			"timeout", "15m")
 	} else {
 		s.log.WarnContext(ctx, "Processing failed",
 			"queue_id", item.ID,
