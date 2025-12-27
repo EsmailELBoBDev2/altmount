@@ -421,13 +421,23 @@ func (s *Service) StartNzbdavImport(dbPath string, rootFolder string, cleanupFil
 		nzbChan, errChan := parser.Parse()
 
 		defer func() {
+			if r := recover(); r != nil {
+				s.log.Error("Panic in NZBDav import", "panic", r, "stack", string(debug.Stack()))
+				s.importMu.Lock()
+				msg := fmt.Sprintf("Import crashed: %v", r)
+				s.importInfo.LastError = &msg
+				s.importMu.Unlock()
+			}
+
 			s.importMu.Lock()
 			s.importInfo.Status = ImportStatusIdle
 			s.importCancel = nil
 			s.importMu.Unlock()
 
 			if cleanupFile {
-				os.Remove(dbPath)
+				if err := os.Remove(dbPath); err != nil {
+					s.log.ErrorContext(context.Background(), "Failed to remove imported DB file", "path", dbPath, "error", err)
+				}
 			}
 
 			// Drain any remaining items from channels to prevent parser goroutine leaks.
@@ -602,7 +612,17 @@ func (s *Service) createNzbFileAndPrepareItem(res *nzbdav.ParsedNzb, rootFolder,
 	}
 
 	if res.RelPath != "" {
-		targetCategory = filepath.Join(targetCategory, res.RelPath)
+		// Security: Sanitize RelPath to prevent path traversal
+		cleanRelPath := filepath.Clean(res.RelPath)
+		// Remove volume checking on Windows (e.g. C:) and leading separators
+		cleanRelPath = strings.TrimLeft(cleanRelPath, string(filepath.Separator))
+		
+		// Check for directory traversal attempts
+		if strings.Contains(cleanRelPath, "..") || strings.HasPrefix(cleanRelPath, "/") || strings.HasPrefix(cleanRelPath, "\\") {
+			s.log.WarnContext(context.Background(), "Ignored potentially malicious or invalid RelPath in NZB", "rel_path", res.RelPath, "clean_path", cleanRelPath, "id", res.ID)
+		} else {
+			targetCategory = filepath.Join(targetCategory, cleanRelPath)
+		}
 	}
 
 	relPath := rootFolder
@@ -667,6 +687,14 @@ func sanitizeFilename(name string) string {
 // performManualScan performs the actual scanning work in a separate goroutine
 func (s *Service) performManualScan(ctx context.Context, scanPath string) {
 	defer func() {
+		if r := recover(); r != nil {
+			s.log.Error("Panic in manual scan", "panic", r, "stack", string(debug.Stack()))
+			s.scanMu.Lock()
+			msg := fmt.Sprintf("Scan crashed: %v", r)
+			s.scanInfo.LastError = &msg
+			s.scanMu.Unlock()
+		}
+
 		s.scanMu.Lock()
 		s.scanInfo.Status = ScanStatusIdle
 		s.scanInfo.CurrentFile = ""
