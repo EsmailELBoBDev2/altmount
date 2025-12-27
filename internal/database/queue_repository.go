@@ -365,14 +365,17 @@ func (r *QueueRepository) withQueueTransaction(ctx context.Context, fn func(*Que
 }
 
 // ResetStaleItems resets processing items back to pending on service startup
+// On startup, ALL items in 'processing' status are considered orphaned since
+// there's no active worker processing them - they need to be reset to pending
 func (r *QueueRepository) ResetStaleItems(ctx context.Context) error {
-	// Only reset items that have been stuck in processing for more than 10 minutes
-	// This prevents resetting items that are actively being processed during quick restarts
+	// Reset ALL processing items on startup - they are orphaned since no worker is processing them
+	// The previous check for 10-minute threshold was problematic because:
+	// 1. Items without started_at wouldn't be reset
+	// 2. Recently-stuck items would remain stuck until threshold passed
 	query := `
 		UPDATE import_queue
 		SET status = 'pending', started_at = NULL, updated_at = datetime('now')
 		WHERE status = 'processing'
-		  AND (started_at IS NOT NULL AND datetime(started_at, '+10 minutes') < datetime('now'))
 	`
 
 	result, err := r.db.ExecContext(ctx, query)
@@ -387,9 +390,8 @@ func (r *QueueRepository) ResetStaleItems(ctx context.Context) error {
 
 	if rowsAffected > 0 {
 		// Log the reset operation for operational visibility with structured logging
-		slog.InfoContext(ctx, "Reset stale queue items",
+		slog.InfoContext(ctx, "Reset stale queue items on startup",
 			"count", rowsAffected,
-			"threshold_minutes", 10,
 			"component", "queue-repository")
 	}
 
