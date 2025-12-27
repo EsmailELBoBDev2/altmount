@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -858,6 +859,18 @@ func (s *Service) workerLoop(workerID int) {
 	ticker := time.NewTicker(processingInterval)
 	defer ticker.Stop()
 
+	// Panic recovery for the worker loop itself - ensures worker never dies
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("Worker panic recovered (critical)", "panic", r, "stack", string(debug.Stack()))
+			// If the service is still running, restart the worker
+			if s.IsRunning() {
+				s.wg.Add(1)
+				go s.workerLoop(workerID)
+			}
+		}
+	}()
+
 	for {
 		select {
 		case <-ticker.C:
@@ -865,7 +878,15 @@ func (s *Service) workerLoop(workerID int) {
 			if s.IsPaused() {
 				continue
 			}
-			s.processQueueItems(s.ctx, workerID)
+			// Use a func to safely handle panic for each process cycle without exiting the loop
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						log.Error("Panic during queue processing cycle", "panic", r, "stack", string(debug.Stack()))
+					}
+				}()
+				s.processQueueItems(s.ctx, workerID)
+			}()
 		case <-s.ctx.Done():
 			log.Info("Queue worker stopped")
 			return
@@ -965,32 +986,61 @@ func (s *Service) processQueueItems(ctx context.Context, workerID int) {
 
 	s.log.DebugContext(ctx, "Processing claimed queue item", "worker_id", workerID, "queue_id", item.ID, "file", item.NzbPath)
 
-	// Create cancellable context for this item
-	itemCtx, cancel := context.WithCancel(ctx)
+	// Protected processing to ensure panic handling updates item status
+	func() {
+		// Create cancellable context for this item
+		itemCtx, cancel := context.WithCancel(ctx)
 
-	// Register cancel function
-	s.cancelMu.Lock()
-	s.cancelFuncs[item.ID] = cancel
-	s.cancelMu.Unlock()
+		// Defer panic recovery to ensure item is not stuck in processing
+		defer func() {
+			if r := recover(); r != nil {
+				stack := string(debug.Stack())
+				s.log.ErrorContext(ctx, "Panic while processing queue item", 
+					"queue_id", item.ID, 
+					"file", item.NzbPath, 
+					"panic", r,
+					"stack", stack)
+				
+				// Clean up cancel function in memory
+				s.cancelMu.Lock()
+				delete(s.cancelFuncs, item.ID)
+				s.cancelMu.Unlock()
+				
+				cancel() // Ensure item context is cancelled
 
-	// Clean up after processing
-	defer func() {
+				// Mark item as failed with panic error
+				errMsg := fmt.Sprintf("Worker panic: %v", r)
+				if err := s.database.Repository.UpdateQueueItemStatus(context.Background(), item.ID, database.QueueStatusFailed, &errMsg); err != nil {
+					s.log.ErrorContext(ctx, "Failed to update status for panicked item", "queue_id", item.ID, "error", err)
+				}
+			}
+		}()
+
+		// Register cancel function
 		s.cancelMu.Lock()
-		delete(s.cancelFuncs, item.ID)
+		s.cancelFuncs[item.ID] = cancel
 		s.cancelMu.Unlock()
+
+		// Clean up after processing (normal path)
+		defer func() {
+			s.cancelMu.Lock()
+			delete(s.cancelFuncs, item.ID)
+			s.cancelMu.Unlock()
+			cancel() // Ensure cleaning up context
+		}()
+
+		// Step 3: Process the NZB file and write to main database using cancellable context
+		resultingPath, processingErr := s.processNzbItem(itemCtx, item)
+
+		// Step 4: Update queue database with results
+		if processingErr != nil {
+			// Handle failure in queue database
+			s.handleProcessingFailure(ctx, item, processingErr)
+		} else {
+			// Handle success (storage path, VFS notification, symlinks, status update)
+			s.handleProcessingSuccess(ctx, item, resultingPath)
+		}
 	}()
-
-	// Step 3: Process the NZB file and write to main database using cancellable context
-	resultingPath, processingErr := s.processNzbItem(itemCtx, item)
-
-	// Step 4: Update queue database with results
-	if processingErr != nil {
-		// Handle failure in queue database
-		s.handleProcessingFailure(ctx, item, processingErr)
-	} else {
-		// Handle success (storage path, VFS notification, symlinks, status update)
-		s.handleProcessingSuccess(ctx, item, resultingPath)
-	}
 }
 
 // refreshMountPathIfNeeded checks if the mount path exists and refreshes the root directory if not found
