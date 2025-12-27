@@ -1012,60 +1012,78 @@ func (s *Service) processQueueItems(ctx context.Context, workerID int) {
 
 	// Protected processing to ensure panic handling updates item status
 	func() {
-		// Create cancellable context with HARD TIMEOUT for this item
-		// This ensures processing doesn't hang indefinitely even if the rardecode
-		// library doesn't respect context cancellation
+		// HARD TIMEOUT: Processing must complete within this time or be marked as failed
+		// This is a last resort to prevent items from being stuck forever
 		processingTimeout := 15 * time.Minute
 		itemCtx, cancel := context.WithTimeout(ctx, processingTimeout)
+		defer cancel()
 
-		// Defer panic recovery to ensure item is not stuck in processing
-		defer func() {
-			if r := recover(); r != nil {
-				stack := string(debug.Stack())
-				s.log.ErrorContext(ctx, "Panic while processing queue item", 
-					"queue_id", item.ID, 
-					"file", item.NzbPath, 
-					"panic", r,
-					"stack", stack)
-				
-				// Clean up cancel function in memory
-				s.cancelMu.Lock()
-				delete(s.cancelFuncs, item.ID)
-				s.cancelMu.Unlock()
-				
-				cancel() // Ensure item context is cancelled
-
-				// Mark item as failed with panic error
-				errMsg := fmt.Sprintf("Worker panic: %v", r)
-				if err := s.database.Repository.UpdateQueueItemStatus(context.Background(), item.ID, database.QueueStatusFailed, &errMsg); err != nil {
-					s.log.ErrorContext(ctx, "Failed to update status for panicked item", "queue_id", item.ID, "error", err)
-				}
-			}
-		}()
-
-		// Register cancel function
+		// Register cancel function for manual cancellation
 		s.cancelMu.Lock()
 		s.cancelFuncs[item.ID] = cancel
 		s.cancelMu.Unlock()
 
-		// Clean up after processing (normal path)
+		// Clean up cancel function after processing
 		defer func() {
 			s.cancelMu.Lock()
 			delete(s.cancelFuncs, item.ID)
 			s.cancelMu.Unlock()
-			cancel() // Ensure cleaning up context
 		}()
 
-		// Step 3: Process the NZB file and write to main database using cancellable context
-		resultingPath, processingErr := s.processNzbItem(itemCtx, item)
+		// Channel to receive processing result
+		type processResult struct {
+			path string
+			err  error
+		}
+		resultChan := make(chan processResult, 1)
 
-		// Step 4: Update queue database with results
-		if processingErr != nil {
-			// Handle failure in queue database
-			s.handleProcessingFailure(ctx, item, processingErr)
-		} else {
-			// Handle success (storage path, VFS notification, symlinks, status update)
-			s.handleProcessingSuccess(ctx, item, resultingPath)
+		// Run processing in a goroutine so we can enforce hard timeout
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					stack := string(debug.Stack())
+					s.log.ErrorContext(ctx, "Panic while processing queue item",
+						"queue_id", item.ID,
+						"file", item.NzbPath,
+						"panic", r,
+						"stack", stack)
+					resultChan <- processResult{err: fmt.Errorf("worker panic: %v", r)}
+				}
+			}()
+
+			path, err := s.processNzbItem(itemCtx, item)
+			resultChan <- processResult{path: path, err: err}
+		}()
+
+		// Wait for either result or timeout
+		select {
+		case result := <-resultChan:
+			// Processing completed (success or failure)
+			if result.err != nil {
+				s.handleProcessingFailure(ctx, item, result.err)
+			} else {
+				s.handleProcessingSuccess(ctx, item, result.path)
+			}
+
+		case <-time.After(processingTimeout):
+			// HARD TIMEOUT - processing took too long, mark as failed immediately
+			s.log.ErrorContext(ctx, "Processing timed out - marking as failed",
+				"queue_id", item.ID,
+				"file", item.NzbPath,
+				"timeout", processingTimeout.String())
+
+			errMsg := fmt.Sprintf("Processing timed out after %s - item stuck, please retry or check Usenet connection", processingTimeout.String())
+			if err := s.database.Repository.UpdateQueueItemStatus(context.Background(), item.ID, database.QueueStatusFailed, &errMsg); err != nil {
+				s.log.ErrorContext(ctx, "Failed to mark timed out item as failed", "queue_id", item.ID, "error", err)
+			}
+
+			// Clear progress tracking
+			if s.broadcaster != nil {
+				s.broadcaster.ClearProgress(int(item.ID))
+			}
+
+			// Cancel the context to attempt cleanup of the stuck goroutine
+			cancel()
 		}
 	}()
 }
