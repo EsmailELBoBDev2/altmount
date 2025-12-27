@@ -167,6 +167,32 @@ func (sw *safeWriter) Write(p []byte) (n int, err error) {
 	return writer.Write(p)
 }
 
+// CloseWithError closes the underlying PipeWriter with an error.
+// This unblocks any readers waiting on the pipe with the given error.
+func (sw *safeWriter) CloseWithError(err error) error {
+	sw.s.mx.Lock()
+	defer sw.s.mx.Unlock()
+
+	if sw.s.writer == nil {
+		return nil
+	}
+
+	return sw.s.writer.CloseWithError(err)
+}
+
+// Close closes the underlying PipeWriter.
+// This signals EOF to any readers waiting on the pipe.
+func (sw *safeWriter) Close() error {
+	sw.s.mx.Lock()
+	defer sw.s.mx.Unlock()
+
+	if sw.s.writer == nil {
+		return nil
+	}
+
+	return sw.s.writer.Close()
+}
+
 func (s *segment) Writer() io.Writer {
 	return &safeWriter{s: s}
 }

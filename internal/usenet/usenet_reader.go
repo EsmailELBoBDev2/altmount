@@ -442,7 +442,14 @@ func (b *UsenetReader) downloadManager(
 						return fmt.Errorf("segment writer is nil")
 					}
 
-					taskCtx := slogutil.With(ctx, "segment_id", s.Id, "segment_idx", segmentIdx)
+					// Create a timeout context for this specific segment download.
+					// A single segment (~700KB) should never take more than 2 minutes
+					// even on slow connections. This prevents hanging on unresponsive providers.
+					segmentTimeout := 2 * time.Minute
+					segmentCtx, segmentCancel := context.WithTimeout(ctx, segmentTimeout)
+					defer segmentCancel()
+
+					taskCtx := slogutil.With(segmentCtx, "segment_id", s.Id, "segment_idx", segmentIdx)
 					err = b.downloadSegmentWithRetry(taskCtx, s)
 
 					if err != nil {
