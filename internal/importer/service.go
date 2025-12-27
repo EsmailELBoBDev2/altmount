@@ -111,6 +111,10 @@ type Service struct {
 	processingStages map[int64]string
 	stagesMu         sync.RWMutex
 
+	// Progress tracking for timeout reset (if progress changes, timeout resets)
+	lastProgressValues map[int64]int // Last known progress value per item (checked every 15 min)
+	progressMu         sync.RWMutex
+
 	// Pool manager for checking connection status
 	poolManager pool.Manager
 
@@ -149,25 +153,26 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 	ctx, cancel := context.WithCancel(context.Background())
 
 	service := &Service{
-		config:           config,
-		metadataService:  metadataService,
-		database:         database,
-		processor:        processor,
-		rcloneClient:     rcloneClient,
-		configGetter:     configGetter,
-		healthRepo:       healthRepo,
-		sabnzbdClient:    sabnzbd.NewSABnzbdClient(),
-		broadcaster:      broadcaster,
-		userRepo:         userRepo,
-		poolManager:      poolManager,
-		log:              slog.Default().With("component", "importer-service"),
-		ctx:              ctx,
-		cancel:           cancel,
-		cancelFuncs:      make(map[int64]context.CancelFunc),
-		processingStages: make(map[int64]string),
-		scanInfo:         ScanInfo{Status: ScanStatusIdle},
-		importInfo:       ImportInfo{Status: ImportStatusIdle},
-		paused:           false,
+		config:             config,
+		metadataService:    metadataService,
+		database:           database,
+		processor:          processor,
+		rcloneClient:       rcloneClient,
+		configGetter:       configGetter,
+		healthRepo:         healthRepo,
+		sabnzbdClient:      sabnzbd.NewSABnzbdClient(),
+		broadcaster:        broadcaster,
+		userRepo:           userRepo,
+		poolManager:        poolManager,
+		log:                slog.Default().With("component", "importer-service"),
+		ctx:                ctx,
+		cancel:             cancel,
+		cancelFuncs:        make(map[int64]context.CancelFunc),
+		processingStages:   make(map[int64]string),
+		lastProgressValues: make(map[int64]int),
+		scanInfo:           ScanInfo{Status: ScanStatusIdle},
+		importInfo:         ImportInfo{Status: ImportStatusIdle},
+		paused:             false,
 	}
 
 	return service, nil
@@ -200,6 +205,12 @@ func (s *Service) Start(ctx context.Context) error {
 		s.wg.Add(1)
 		go s.workerLoop(i)
 	}
+
+	// Start background orphaned item cleanup goroutine
+	// This catches items that got stuck in "processing" without an active worker
+	// (e.g., if a worker crashed or the app didn't restart cleanly)
+	s.wg.Add(1)
+	go s.cleanupOrphanedItems()
 
 	s.running = true
 	s.log.InfoContext(ctx, fmt.Sprintf("NZB import service started successfully with %d workers", s.config.Workers))
@@ -923,6 +934,122 @@ func (s *Service) workerLoop(workerID int) {
 		case <-s.ctx.Done():
 			log.Info("Queue worker stopped")
 			return
+		}
+	}
+}
+
+// cleanupOrphanedItems runs periodically to catch items stuck in "processing"
+// without an active worker (orphaned items), and marks them as failed after 15 minutes
+func (s *Service) cleanupOrphanedItems() {
+	defer s.wg.Done()
+
+	log := s.log.With("component", "orphan-cleanup")
+	log.InfoContext(s.ctx, "Orphaned item cleanup started")
+
+	// Check every 15 minutes - if progress is the same as last check, item is stuck
+	ticker := time.NewTicker(15 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			// Get all items currently in processing status
+			processingItems, err := s.database.Repository.GetProcessingItems(s.ctx)
+			if err != nil {
+				log.ErrorContext(s.ctx, "Failed to get processing items", "error", err)
+				continue
+			}
+
+			var failedCount int64
+
+			for _, item := range processingItems {
+				itemID := item.ID
+				
+				// Get current progress from broadcaster (if available)
+				currentProgress := 0
+				if s.broadcaster != nil {
+					if progress, exists := s.broadcaster.GetProgress(int(itemID)); exists {
+						currentProgress = progress
+					}
+				}
+
+				s.progressMu.Lock()
+				lastProgress, hasLastProgress := s.lastProgressValues[itemID]
+
+				if !hasLastProgress {
+					// First time seeing this item - record progress and wait for next check
+					s.lastProgressValues[itemID] = currentProgress
+					s.progressMu.Unlock()
+					log.DebugContext(s.ctx, "First check for processing item",
+						"queue_id", itemID,
+						"progress", currentProgress)
+					continue
+				}
+
+				// Check if progress has changed since last check (15 min ago)
+				if currentProgress != lastProgress {
+					// Progress changed - item is alive, update and continue
+					s.lastProgressValues[itemID] = currentProgress
+					s.progressMu.Unlock()
+					log.DebugContext(s.ctx, "Progress changed, item alive",
+						"queue_id", itemID,
+						"last_progress", lastProgress,
+						"current_progress", currentProgress)
+					continue
+				}
+				s.progressMu.Unlock()
+
+				// Progress is SAME as 15 minutes ago - item is stuck!
+				errMsg := fmt.Sprintf("Processing stuck - no progress change for 15 minutes (stuck at %d%%)", currentProgress)
+				if err := s.database.Repository.UpdateQueueItemStatus(s.ctx, itemID, database.QueueStatusFailed, &errMsg); err != nil {
+					log.ErrorContext(s.ctx, "Failed to mark stuck item as failed", "queue_id", itemID, "error", err)
+				} else {
+					log.WarnContext(s.ctx, "Marked stuck item as failed",
+						"queue_id", itemID,
+						"progress", currentProgress)
+					failedCount++
+				}
+				
+				// Clean up tracking for this item
+				s.progressMu.Lock()
+				delete(s.lastProgressValues, itemID)
+				s.progressMu.Unlock()
+				
+				// Clear broadcaster progress
+				if s.broadcaster != nil {
+					s.broadcaster.ClearProgress(int(itemID))
+				}
+			}
+
+			// Clean up tracking for items that are no longer processing
+			s.cleanupProgressTracking(processingItems)
+
+			if failedCount > 0 {
+				log.WarnContext(s.ctx, "Failed stuck processing items", "count", failedCount)
+			}
+
+		case <-s.ctx.Done():
+			log.InfoContext(s.ctx, "Orphaned item cleanup stopped")
+			return
+		}
+	}
+}
+
+// cleanupProgressTracking removes tracking for items that are no longer processing
+func (s *Service) cleanupProgressTracking(currentProcessingItems []*database.ImportQueueItem) {
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+
+	// Create a set of current processing item IDs
+	currentIDs := make(map[int64]bool)
+	for _, item := range currentProcessingItems {
+		currentIDs[item.ID] = true
+	}
+
+	// Remove tracking for items that are no longer processing
+	for itemID := range s.lastProgressValues {
+		if !currentIDs[itemID] {
+			delete(s.lastProgressValues, itemID)
 		}
 	}
 }

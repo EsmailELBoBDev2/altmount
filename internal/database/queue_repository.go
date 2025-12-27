@@ -397,3 +397,83 @@ func (r *QueueRepository) ResetStaleItems(ctx context.Context) error {
 
 	return nil
 }
+
+// FailOrphanedProcessingItems marks items stuck in "processing" status for too long as failed
+// This catches orphaned items that have no active worker (e.g., worker crashed, app didn't restart cleanly)
+func (r *QueueRepository) FailOrphanedProcessingItems(ctx context.Context, timeout time.Duration) (int64, error) {
+	// Calculate the cutoff time (items started more than 'timeout' ago)
+	timeoutMinutes := int(timeout.Minutes())
+	
+	// Mark as failed with timeout error message
+	errorMsg := fmt.Sprintf("Orphaned processing item - stuck for over %d minutes without progress (no active worker)", timeoutMinutes)
+	
+	query := `
+		UPDATE import_queue
+		SET status = 'failed', 
+		    error_message = ?,
+		    updated_at = datetime('now')
+		WHERE status = 'processing'
+		  AND started_at IS NOT NULL 
+		  AND datetime(started_at, '+' || ? || ' minutes') < datetime('now')
+	`
+
+	result, err := r.db.ExecContext(ctx, query, errorMsg, timeoutMinutes)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fail orphaned processing items: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	return rowsAffected, nil
+}
+
+// GetProcessingItems returns all items currently in "processing" status
+func (r *QueueRepository) GetProcessingItems(ctx context.Context) ([]*ImportQueueItem, error) {
+	query := `
+		SELECT id, nzb_path, relative_path, category, status, created_at, 
+		       updated_at, error_message, file_size, retry_count, 
+		       started_at, completed_at, storage_path
+		FROM import_queue
+		WHERE status = 'processing'
+		ORDER BY id
+	`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get processing items: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*ImportQueueItem
+	for rows.Next() {
+		item := &ImportQueueItem{}
+		err := rows.Scan(
+			&item.ID,
+			&item.NzbPath,
+			&item.RelativePath,
+			&item.Category,
+			&item.Status,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+			&item.ErrorMessage,
+			&item.FileSize,
+			&item.RetryCount,
+			&item.StartedAt,
+			&item.CompletedAt,
+			&item.StoragePath,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan processing item: %w", err)
+		}
+		items = append(items, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating processing items: %w", err)
+	}
+
+	return items, nil
+}
