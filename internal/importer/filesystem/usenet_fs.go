@@ -154,9 +154,24 @@ func (uf *UsenetFile) Read(p []byte) (n int, err error) {
 		return 0, fs.ErrClosed
 	}
 
+	// Check if parent context is already cancelled
+	select {
+	case <-uf.ctx.Done():
+		return 0, uf.ctx.Err()
+	default:
+	}
+
+	// Create a timeout context to prevent indefinite blocking
+	timeout := uf.readTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(uf.ctx, timeout)
+	defer cancel()
+
 	// Create reader if not exists
 	if uf.reader == nil {
-		reader, err := uf.createUsenetReader(uf.ctx, uf.position, uf.size-1)
+		reader, err := uf.createUsenetReader(ctx, uf.position, uf.size-1)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create usenet reader: %w", err)
 		}
@@ -164,10 +179,25 @@ func (uf *UsenetFile) Read(p []byte) (n int, err error) {
 		uf.reader = reader
 	}
 
-	n, err = uf.reader.Read(p)
-	uf.position += int64(n)
+	// Read with timeout handling
+	type readResult struct {
+		n   int
+		err error
+	}
+	done := make(chan readResult, 1)
 
-	return n, err
+	go func() {
+		n, err := uf.reader.Read(p)
+		done <- readResult{n, err}
+	}()
+
+	select {
+	case result := <-done:
+		uf.position += int64(result.n)
+		return result.n, result.err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }
 
 func (uf *UsenetFile) Close() error {

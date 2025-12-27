@@ -77,6 +77,9 @@ func (r *segmentRange) CloseSegments() {
 
 func (r *segmentRange) Clear() error {
 	for _, s := range r.segments {
+		if s == nil {
+			continue
+		}
 		if err := s.Close(); err != nil {
 			return err
 		}
