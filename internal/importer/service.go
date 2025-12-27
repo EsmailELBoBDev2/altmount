@@ -107,6 +107,13 @@ type Service struct {
 	cancelFuncs map[int64]context.CancelFunc
 	cancelMu    sync.RWMutex
 
+	// Processing stage tracking (to know where stuck items are blocked)
+	processingStages map[int64]string
+	stagesMu         sync.RWMutex
+
+	// Pool manager for checking connection status
+	poolManager pool.Manager
+
 	// Manual scan state
 	scanMu     sync.RWMutex
 	scanInfo   ScanInfo
@@ -142,23 +149,25 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 	ctx, cancel := context.WithCancel(context.Background())
 
 	service := &Service{
-		config:          config,
-		metadataService: metadataService,
-		database:        database,
-		processor:       processor,
-		rcloneClient:    rcloneClient,
-		configGetter:    configGetter,
-		healthRepo:      healthRepo,
-		sabnzbdClient:   sabnzbd.NewSABnzbdClient(),
-		broadcaster:     broadcaster,
-		userRepo:        userRepo,
-		log:             slog.Default().With("component", "importer-service"),
-		ctx:             ctx,
-		cancel:          cancel,
-		cancelFuncs:     make(map[int64]context.CancelFunc),
-		scanInfo:        ScanInfo{Status: ScanStatusIdle},
-		importInfo:      ImportInfo{Status: ImportStatusIdle},
-		paused:          false,
+		config:           config,
+		metadataService:  metadataService,
+		database:         database,
+		processor:        processor,
+		rcloneClient:     rcloneClient,
+		configGetter:     configGetter,
+		healthRepo:       healthRepo,
+		sabnzbdClient:    sabnzbd.NewSABnzbdClient(),
+		broadcaster:      broadcaster,
+		userRepo:         userRepo,
+		poolManager:      poolManager,
+		log:              slog.Default().With("component", "importer-service"),
+		ctx:              ctx,
+		cancel:           cancel,
+		cancelFuncs:      make(map[int64]context.CancelFunc),
+		processingStages: make(map[int64]string),
+		scanInfo:         ScanInfo{Status: ScanStatusIdle},
+		importInfo:       ImportInfo{Status: ImportStatusIdle},
+		paused:           false,
 	}
 
 	return service, nil
@@ -1051,6 +1060,9 @@ func (s *Service) processQueueItems(ctx context.Context, workerID int) {
 				}
 			}()
 
+			// Track initial stage
+			s.updateProcessingStage(item.ID, "starting processing")
+			
 			path, err := s.processNzbItem(itemCtx, item)
 			resultChan <- processResult{path: path, err: err}
 		}()
@@ -1064,28 +1076,66 @@ func (s *Service) processQueueItems(ctx context.Context, workerID int) {
 			} else {
 				s.handleProcessingSuccess(ctx, item, result.path)
 			}
+			
+			// Clean up stage tracking
+			s.stagesMu.Lock()
+			delete(s.processingStages, item.ID)
+			s.stagesMu.Unlock()
 
 		case <-time.After(processingTimeout):
 			// HARD TIMEOUT - processing took too long, mark as failed immediately
+			
+			// Get the current stage where processing is stuck
+			s.stagesMu.RLock()
+			currentStage := s.processingStages[item.ID]
+			s.stagesMu.RUnlock()
+			if currentStage == "" {
+				currentStage = "unknown stage"
+			}
+			
+			// Try to diagnose why it timed out
+			var reason string
+			if s.poolManager == nil || !s.poolManager.HasPool() {
+				reason = "Usenet connection pool unavailable - check provider configuration"
+			} else if _, err := s.poolManager.GetPool(); err != nil {
+				reason = fmt.Sprintf("Usenet connection error: %v", err)
+			} else {
+				// Pool is available but processing still stuck
+				reason = fmt.Sprintf("stuck at '%s' - possibly slow/unresponsive Usenet provider, corrupted articles, or network issues", currentStage)
+			}
+			
 			s.log.ErrorContext(ctx, "Processing timed out - marking as failed",
 				"queue_id", item.ID,
 				"file", item.NzbPath,
-				"timeout", processingTimeout.String())
+				"timeout", processingTimeout.String(),
+				"stage", currentStage,
+				"reason", reason)
 
-			errMsg := fmt.Sprintf("Processing timed out after %s - item stuck, please retry or check Usenet connection", processingTimeout.String())
+			errMsg := fmt.Sprintf("Processing timed out after %s (%s)", processingTimeout.String(), reason)
 			if err := s.database.Repository.UpdateQueueItemStatus(context.Background(), item.ID, database.QueueStatusFailed, &errMsg); err != nil {
 				s.log.ErrorContext(ctx, "Failed to mark timed out item as failed", "queue_id", item.ID, "error", err)
 			}
 
-			// Clear progress tracking
+			// Clear progress and stage tracking
 			if s.broadcaster != nil {
 				s.broadcaster.ClearProgress(int(item.ID))
 			}
+			s.stagesMu.Lock()
+			delete(s.processingStages, item.ID)
+			s.stagesMu.Unlock()
 
 			// Cancel the context to attempt cleanup of the stuck goroutine
 			cancel()
 		}
 	}()
+}
+
+// updateProcessingStage updates the current processing stage for an item
+// This is used for diagnostics when processing times out
+func (s *Service) updateProcessingStage(itemID int64, stage string) {
+	s.stagesMu.Lock()
+	s.processingStages[itemID] = stage
+	s.stagesMu.Unlock()
 }
 
 // refreshMountPathIfNeeded checks if the mount path exists and refreshes the root directory if not found
@@ -1135,7 +1185,12 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 		allowedExtensionsOverride = &emptySlice // Allow all extensions for test files
 	}
 
-	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride)
+	// Create stage callback that updates the processing stage for this item
+	stageCallback := func(stage string) {
+		s.updateProcessingStage(item.ID, stage)
+	}
+
+	return s.processor.ProcessNzbFileWithStage(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, stageCallback)
 }
 
 // buildCategoryPath resolves a category name to its configured directory path.

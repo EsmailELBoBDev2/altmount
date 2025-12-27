@@ -26,6 +26,10 @@ const (
 	strmFileExtension = ".strm"
 )
 
+// StageCallback is a function type for reporting processing stages
+// Used for diagnostics when processing times out
+type StageCallback func(stage string)
+
 // Processor handles the processing and storage of parsed NZB files using metadata storage
 type Processor struct {
 	parser                  *parser.Parser
@@ -133,6 +137,18 @@ func (proc *Processor) checkCancellation(ctx context.Context) error {
 
 // ProcessNzbFile processes an NZB or STRM file maintaining the folder structure relative to relative path
 func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePath string, queueID int, allowedExtensionsOverride *[]string) (string, error) {
+	return proc.ProcessNzbFileWithStage(ctx, filePath, relativePath, queueID, allowedExtensionsOverride, nil)
+}
+
+// ProcessNzbFileWithStage processes an NZB or STRM file with stage callback for tracking progress
+func (proc *Processor) ProcessNzbFileWithStage(ctx context.Context, filePath, relativePath string, queueID int, allowedExtensionsOverride *[]string, stageCallback StageCallback) (string, error) {
+	// Helper to report stage if callback is provided
+	reportStage := func(stage string) {
+		if stageCallback != nil {
+			stageCallback(stage)
+		}
+	}
+
 	// Determine max connections to use
 	maxConnections := proc.maxImportConnections
 
@@ -144,6 +160,8 @@ func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePat
 
 	// Update progress: starting
 	proc.updateProgress(queueID, 0)
+	reportStage("opening file")
+
 	// Step 1: Open and parse the file
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -154,6 +172,7 @@ func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePat
 	var parsed *parser.ParsedNzb
 
 	// Determine file type and parse accordingly
+	reportStage("parsing NZB/STRM file")
 	if strings.HasSuffix(strings.ToLower(filePath), strmFileExtension) {
 		parsed, err = proc.strmParser.ParseStrmFile(file, filePath)
 		if err != nil {
@@ -208,22 +227,27 @@ func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePat
 	switch parsed.Type {
 	case parser.NzbTypeSingleFile:
 		proc.updateProgress(queueID, 30)
+		reportStage("validating segments for single file")
 		result, err = proc.processSingleFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, maxConnections, allowedExtensions)
 
 	case parser.NzbTypeMultiFile:
 		proc.updateProgress(queueID, 30)
+		reportStage("validating segments for multi-file")
 		result, err = proc.processMultiFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, maxConnections, allowedExtensions)
 
 	case parser.NzbTypeRarArchive:
 		proc.updateProgress(queueID, 30)
+		reportStage("analyzing RAR archive structure")
 		result, err = proc.processRarArchive(ctx, virtualDir, regularFiles, archiveFiles, parsed, queueID, maxConnections, allowedExtensions)
 
 	case parser.NzbType7zArchive:
 		proc.updateProgress(queueID, 30)
+		reportStage("analyzing 7zip archive structure")
 		result, err = proc.processSevenZipArchive(ctx, virtualDir, regularFiles, archiveFiles, parsed, queueID, maxConnections, allowedExtensions)
 
 	case parser.NzbTypeStrm:
 		proc.updateProgress(queueID, 30)
+		reportStage("processing STRM file")
 		result, err = proc.processSingleFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, maxConnections, allowedExtensions)
 
 	default:
@@ -232,6 +256,7 @@ func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePat
 
 	// Update progress: complete
 	if err == nil {
+		reportStage("writing metadata")
 		proc.updateProgress(queueID, 100)
 	}
 
