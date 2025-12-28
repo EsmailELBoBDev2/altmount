@@ -1146,6 +1146,12 @@ func (s *Service) processQueueItems(ctx context.Context, workerID int) {
 
 	s.log.DebugContext(ctx, "Processing claimed queue item", "worker_id", workerID, "queue_id", item.ID, "file", item.NzbPath)
 
+	// Record initial progress value for orphan cleanup tracking
+	// This ensures the 15-min timeout is from when processing actually starts, not from ticker schedule
+	s.progressMu.Lock()
+	s.lastProgressValues[item.ID] = 0 // Start at 0%
+	s.progressMu.Unlock()
+
 	// Protected processing to ensure panic handling updates item status
 	func() {
 		// HARD TIMEOUT: Processing must complete within this time or be marked as failed
