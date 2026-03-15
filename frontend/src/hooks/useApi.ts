@@ -32,6 +32,7 @@ export const useQueueStats = () => {
 	return useQuery({
 		queryKey: ["queue", "stats"],
 		queryFn: () => apiClient.getQueueStats(),
+		refetchInterval: 10000, // Refresh every 10s so the card stays current
 	});
 };
 
@@ -195,6 +196,7 @@ export const useHealthStats = () => {
 	return useQuery({
 		queryKey: ["health", "stats"],
 		queryFn: () => apiClient.getHealthStats(),
+		refetchInterval: 15000, // Refresh every 15s so HealthStatusCard stays current
 	});
 };
 

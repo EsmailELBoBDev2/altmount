@@ -1,7 +1,7 @@
-import { Database, Download, FolderOpen, Loader2 } from "lucide-react";
+import { Database, Download, FolderOpen } from "lucide-react";
 import { useMemo } from "react";
 import { useNzbdavImportStatus, useQueue, useQueueStats, useScanStatus } from "../../hooks/useApi";
-import { useProgressStream } from "../../hooks/useProgressStream";
+import { useQueueStreamContext } from "../../contexts/QueueStreamContext";
 import { ScanStatus } from "../../types/api";
 
 interface ImportStatusCardProps {
@@ -18,9 +18,8 @@ export function ImportStatusCard({ className }: ImportStatusCardProps) {
 		refetchInterval: 5000,
 	});
 
-	const hasProcessingItems = (processingQueue?.data?.length || 0) > 0;
-	// Poll processing queue regularly so the display clears automatically when jobs finish
-	const { progress: liveProgress } = useProgressStream({ enabled: hasProcessingItems });
+	// Use the shared SSE connection (no extra EventSource opened here)
+	const { progress: liveProgress } = useQueueStreamContext();
 
 	const activeImport = useMemo(() => {
 		// 1. Check for directory scan
@@ -127,12 +126,13 @@ export function ImportStatusCard({ className }: ImportStatusCardProps) {
 					<div className="flex items-center justify-between">
 						<div>
 							<h2 className="card-title font-medium text-base-content/70 text-sm">Import Status</h2>
-							<div className="mt-1 flex items-center gap-2">
-								<Loader2 className="h-4 w-4 animate-spin text-base-content/20" />
-								<div className="text-base-content/30 text-sm italic">Loading...</div>
-							</div>
+							<div className="mt-1 text-base-content/30 text-sm italic">Idle</div>
 						</div>
 						<Download className="h-8 w-8 text-base-content/10" />
+					</div>
+					<div className="mt-4 flex items-center gap-1.5 font-bold text-base-content/30 text-xs uppercase tracking-widest">
+						<div className="h-1.5 w-1.5 rounded-full bg-base-content/20" />
+						All tasks complete
 					</div>
 				</div>
 			</div>

@@ -1,7 +1,7 @@
 import { CheckCircle2, Download, FileVideo, History, Play } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useActiveStreams, useImportHistory, useQueue } from "../../hooks/useApi";
-import { useProgressStream } from "../../hooks/useProgressStream";
+import { useQueueStreamContext } from "../../contexts/QueueStreamContext";
 import { formatBytes, formatDuration, formatRelativeTime, formatSpeed } from "../../lib/utils";
 import type { ActiveStream } from "../../types/api";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
@@ -20,8 +20,8 @@ export function ActivityHub() {
 	);
 
 	const queueItems = queueResponse?.data;
-	const hasProcessingItems = (queueItems?.length || 0) > 0;
-	const { progress: liveProgress } = useProgressStream({ enabled: hasProcessingItems });
+	// Use the shared SSE connection (no extra EventSource opened here)
+	const { progress: liveProgress } = useQueueStreamContext();
 
 	// Enrich queue items with live progress
 	const enrichedQueueItems = useMemo(() => {

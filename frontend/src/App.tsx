@@ -6,6 +6,7 @@ import { Layout } from "./components/layout/Layout";
 import { ToastContainer } from "./components/ui/ToastContainer";
 import { AuthProvider } from "./contexts/AuthContext";
 import { ModalProvider } from "./contexts/ModalContext";
+import { QueueStreamProvider } from "./contexts/QueueStreamContext";
 import { ToastProvider } from "./contexts/ToastContext";
 import { queryClient } from "./lib/queryClient";
 import { ConfigurationPage } from "./pages/ConfigurationPage";
@@ -22,6 +23,7 @@ function App() {
 				<ModalProvider>
 					<AuthProvider>
 						<BrowserRouter>
+							<QueueStreamProvider>
 							<div className="min-h-screen bg-base-100">
 								<Routes>
 									{/* Protected routes */}
@@ -59,6 +61,7 @@ function App() {
 									</Route>
 								</Routes>
 							</div>
+							</QueueStreamProvider>
 							<ToastContainer />
 						</BrowserRouter>
 					</AuthProvider>
