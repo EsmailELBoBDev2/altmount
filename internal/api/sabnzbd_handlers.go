@@ -675,28 +675,14 @@ func (s *Server) handleSABnzbdQueueDelete(c *fiber.Ctx) error {
 		// Delete from queue
 		err = s.queueRepo.RemoveFromQueue(c.Context(), id)
 		if err == nil {
-			// Also remove from history if it existed there (to prevent ghost items)
-			_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), id)
-			_, _ = s.queueRepo.RemoveFromHistory(c.Context(), id)
-
 			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 		}
 	}
 
 	// 2. Fallback to DownloadID if not found or not numeric
 	if s.queueRepo != nil {
-		// Try to find the item first to get its ID (for history cleanup)
-		item, _ := s.queueRepo.GetQueueItemByDownloadID(c.Context(), nzoID)
-
 		err = s.queueRepo.RemoveFromQueueByDownloadID(c.Context(), nzoID)
 		if err == nil {
-			// Also remove from history by DownloadID
-			_, _ = s.queueRepo.RemoveFromHistoryByDownloadID(c.Context(), nzoID)
-
-			if item != nil {
-				_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), item.ID)
-			}
-
 			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 		}
 	}
@@ -898,44 +884,14 @@ func (s *Server) handleSABnzbdHistoryDelete(c *fiber.Ctx) error {
 		// Delete from queue (history items are still queue items with completed/failed status)
 		err = s.queueRepo.RemoveFromQueue(c.Context(), id)
 		if err == nil {
-			_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), id)
-			_, _ = s.queueRepo.RemoveFromHistory(c.Context(), id)
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
-
-		// If not in active queue, it might be in persistent history
-		// Try by original NzbID first
-		affected, histErr := s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), id)
-		if histErr == nil && affected > 0 {
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
-
-		affected, histErr = s.queueRepo.RemoveFromHistory(c.Context(), id)
-		if histErr == nil && affected > 0 {
 			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 		}
 	}
 
 	// 2. Fallback to DownloadID if not found or not numeric
 	if s.queueRepo != nil {
-		// Try to find the item first to get its ID
-		item, _ := s.queueRepo.GetQueueItemByDownloadID(c.Context(), nzoID)
-
-		// Remove from queue and history by DownloadID
+		// Remove from queue by DownloadID
 		_ = s.queueRepo.RemoveFromQueueByDownloadID(c.Context(), nzoID)
-		affected, err := s.queueRepo.RemoveFromHistoryByDownloadID(c.Context(), nzoID)
-
-		if err == nil && affected > 0 {
-			if item != nil {
-				_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), item.ID)
-			}
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
-
-		// If item was found in queue but not in history, consider it handled
-		if item != nil {
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
 	}
 
 	return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true}) // Always return true for delete consistency

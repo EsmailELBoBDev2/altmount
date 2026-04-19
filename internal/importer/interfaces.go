@@ -131,6 +131,8 @@ type ImportService interface {
 	RegisterConfigChangeHandler(configManager any)
 	// RegenerateMetadata attempts to rebuild metadata for a file by finding its original NZB
 	RegenerateMetadata(ctx context.Context, mountRelativePath string) error
+	// AddImportHistory records a successful file import in persistent history
+	AddImportHistory(ctx context.Context, history *database.ImportHistory) error
 }
 
 // FileSizeCalculator calculates file sizes for different file types

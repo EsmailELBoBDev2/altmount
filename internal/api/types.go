@@ -402,15 +402,19 @@ type QueueHistoryRange struct {
 
 // ImportHistoryResponse represents a persistent import record in API responses
 type ImportHistoryResponse struct {
-	ID          int64     `json:"id"`
-	NzbID       *int64    `json:"nzb_id"`
-	NzbName     string    `json:"nzb_name"`
-	FileName    string    `json:"file_name"`
-	FileSize    int64     `json:"file_size"`
-	VirtualPath string    `json:"virtual_path"`
-	LibraryPath *string   `json:"library_path,omitempty"`
-	Category    *string   `json:"category"`
-	CompletedAt time.Time `json:"completed_at"`
+	ID           int64     `json:"id"`
+	DownloadID   *string   `json:"download_id,omitempty"`
+	NzbID        *int64    `json:"nzb_id"`
+	NzbName      string    `json:"nzb_name"`
+	FileName     string    `json:"file_name"`
+	FileSize     int64     `json:"file_size"`
+	VirtualPath  string    `json:"virtual_path"`
+	LibraryPath  *string   `json:"library_path,omitempty"`
+	Category     *string   `json:"category"`
+	Metadata     *string   `json:"metadata,omitempty"`
+	InstanceName *string   `json:"instance_name,omitempty"`
+	Status       string    `json:"status"`
+	CompletedAt  time.Time `json:"completed_at"`
 }
 
 // DailyStat represents statistics for a single day
@@ -725,16 +729,28 @@ func ToImportHistoryResponse(h *database.ImportHistory) *ImportHistoryResponse {
 	if h == nil {
 		return nil
 	}
+	
+	displayName := h.FileName
+	if displayName == "" {
+		displayName = h.NzbName
+	}
+	// Clean up .nzb suffix if showing nzb name
+	displayName = strings.TrimSuffix(displayName, ".nzb")
+
 	return &ImportHistoryResponse{
-		ID:          h.ID,
-		NzbID:       h.NzbID,
-		NzbName:     h.NzbName,
-		FileName:    h.FileName,
-		FileSize:    h.FileSize,
-		VirtualPath: h.VirtualPath,
-		LibraryPath: h.LibraryPath,
-		Category:    h.Category,
-		CompletedAt: h.CompletedAt,
+		ID:           h.ID,
+		DownloadID:   h.DownloadID,
+		NzbID:        h.NzbID,
+		NzbName:      h.NzbName,
+		FileName:     displayName,
+		FileSize:     h.FileSize,
+		VirtualPath:  h.VirtualPath,
+		LibraryPath:  h.LibraryPath,
+		Category:     h.Category,
+		Metadata:     h.Metadata,
+		InstanceName: h.InstanceName,
+		Status:       string(h.Status),
+		CompletedAt:  h.CompletedAt,
 	}
 }
 

@@ -6,6 +6,7 @@
 -- ============================================================================
 CREATE TABLE import_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    download_id TEXT DEFAULT NULL, -- GUID/String ID for external tracking
     nzb_path TEXT NOT NULL,
     relative_path TEXT DEFAULT NULL,
     storage_path TEXT DEFAULT NULL,
@@ -22,10 +23,14 @@ CREATE TABLE import_queue (
     metadata TEXT DEFAULT NULL, -- JSON metadata for additional processing options
     category TEXT DEFAULT NULL, -- SABnzbd compatibility
     file_size BIGINT DEFAULT NULL, -- File size in bytes
+    target_path TEXT DEFAULT NULL, -- Optional forced symlink destination path
+    instance_name TEXT DEFAULT NULL, -- ARR instance name
     UNIQUE(nzb_path) -- Prevent duplicate entries for same file
 );
 
 -- Indexes for efficient queue processing
+CREATE INDEX idx_queue_download_id ON import_queue(download_id);
+CREATE INDEX idx_queue_instance_name ON import_queue(instance_name);
 CREATE INDEX idx_queue_status_priority ON import_queue(status, priority, created_at);
 CREATE INDEX idx_queue_batch_id ON import_queue(batch_id);
 CREATE INDEX idx_queue_status ON import_queue(status);
@@ -55,19 +60,25 @@ VALUES (0, 0, 0, 0);
 CREATE TABLE file_health (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     file_path TEXT NOT NULL UNIQUE, -- Virtual file path in the filesystem
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'checking', 'healthy', 'partial', 'corrupted')),
+    library_path TEXT DEFAULT NULL, -- Physical file path in the library
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'checking', 'healthy', 'partial', 'repair_triggered', 'corrupted')),
     last_checked DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_error TEXT DEFAULT NULL,
     retry_count INTEGER NOT NULL DEFAULT 0,
     max_retries INTEGER NOT NULL DEFAULT 2,
+    repair_retry_count INTEGER NOT NULL DEFAULT 0,
+    max_repair_retries INTEGER NOT NULL DEFAULT 3,
     next_retry_at DATETIME DEFAULT NULL,
     source_nzb_path TEXT DEFAULT NULL, -- Source NZB file for reference
+    download_id TEXT DEFAULT NULL, -- GUID for ARR tracking
+    priority INTEGER NOT NULL DEFAULT 2, -- 1=high, 2=normal, 3=low
     error_details TEXT DEFAULT NULL, -- JSON error details (missing segments, etc)
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes for efficient health monitoring
+CREATE INDEX idx_health_download_id ON file_health(download_id);
 CREATE INDEX idx_file_health_status ON file_health(status);
 CREATE INDEX idx_file_health_retry ON file_health(status, next_retry_at) WHERE status NOT IN ('healthy', 'checking');
 CREATE INDEX idx_file_health_path ON file_health(file_path);
@@ -116,12 +127,14 @@ CREATE INDEX idx_users_api_key ON users(api_key);
 CREATE TABLE media_files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     instance_name TEXT NOT NULL,
-    instance_type TEXT NOT NULL CHECK(instance_type IN ('radarr', 'sonarr')),
+    instance_type TEXT NOT NULL CHECK(instance_type IN ('radarr', 'sonarr', 'lidarr', 'readarr', 'whisparr')),
     external_id INTEGER NOT NULL,
     file_path TEXT NOT NULL,
     file_size INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    file_id INTEGER,
+    UNIQUE(instance_name, instance_type, external_id)
 );
 
 -- Index for efficient file path lookups (health correlation)

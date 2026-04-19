@@ -298,11 +298,14 @@ func (m *Manager) sonarrHasFile(ctx context.Context, client *sonarr.Sonarr, inst
 
 // TriggerFileRescan triggers a rescan for a specific file path through the appropriate ARR instance
 func (m *Manager) TriggerFileRescan(ctx context.Context, pathForRescan string, relativePath string) error {
+	// Standardize relativePath: ensure no leading slash for better matching
+	cleanRelative := strings.TrimPrefix(relativePath, "/")
+
 	res, err, _ := m.sf.Do(fmt.Sprintf("rescan:%s", pathForRescan), func() (interface{}, error) {
 		slog.InfoContext(ctx, "Triggering ARR rescan", "path", pathForRescan, "relative_path", relativePath)
 
 		// Find which ARR instance manages this file path
-		instanceType, instanceName, err := m.findInstanceForFilePath(ctx, pathForRescan, relativePath)
+		instanceType, instanceName, err := m.findInstanceForFilePath(ctx, pathForRescan, cleanRelative)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find ARR instance for file path %s: %w", pathForRescan, err)
 		}
@@ -634,6 +637,8 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 
 	// Find the series that contains this file path
 	var targetSeries *sonarr.Series
+	cleanRelative := strings.TrimPrefix(relativePath, "/")
+
 	for _, show := range series {
 		if strings.Contains(filePath, show.Path) {
 			targetSeries = show
@@ -642,10 +647,10 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 	}
 
 	if targetSeries == nil {
-		// Fallback search for series using relative path
+		// Fallback search for series using relative path (slash-agnostic)
 		for _, show := range series {
 			showFolderName := filepath.Base(show.Path)
-			if strings.Contains(relativePath, showFolderName) {
+			if strings.Contains(relativePath, showFolderName) || strings.Contains(cleanRelative, showFolderName) {
 				slog.InfoContext(ctx, "Found series match by folder name", "series", show.Title, "folder", showFolderName)
 				targetSeries = show
 				break
@@ -930,4 +935,134 @@ func (m *Manager) blocklistSonarrEpisodeFile(ctx context.Context, client *sonarr
 
 	slog.WarnContext(ctx, "Could not find grab event in Sonarr history for download", "download_id", downloadID)
 	return nil
+}
+
+// FindDownloadIDByPath surgically probes an ARR instance history to find the DownloadID for a path
+func (m *Manager) FindDownloadIDByPath(ctx context.Context, filePath string) (string, string, error) {
+	// 1. Find which instance manages this file
+	instanceType, instanceName, err := m.findInstanceForFilePath(ctx, filePath, "")
+	if err != nil {
+		return "", "", err
+	}
+
+	instance, err := m.instances.FindConfigInstance(instanceType, instanceName)
+	if err != nil {
+		return "", "", err
+	}
+
+	switch instanceType {
+	case "radarr":
+		client, err := m.clients.GetOrCreateRadarrClient(instanceName, instance.URL, instance.APIKey)
+		if err != nil {
+			return "", "", err
+		}
+
+		movies, err := m.data.GetMovies(ctx, client, instanceName)
+		if err != nil {
+			return "", "", err
+		}
+
+		var movieID int64
+		fileName := filepath.Base(filePath)
+		cleanRelative := strings.TrimPrefix(strings.TrimPrefix(filePath, "/complete/movies/"), "/movies/")
+
+		for _, movie := range movies {
+			if movie.HasFile && movie.MovieFile != nil {
+				if movie.MovieFile.Path == filePath || filepath.Base(movie.MovieFile.Path) == fileName ||
+					strings.Contains(movie.MovieFile.Path, cleanRelative) {
+					movieID = movie.ID
+					break
+				}
+			}
+		}
+
+		if movieID == 0 {
+			// Try matching by folder name
+			dirName := filepath.Base(filepath.Dir(filePath))
+			for _, movie := range movies {
+				if strings.Contains(strings.ToLower(movie.Title), strings.ToLower(dirName)) ||
+					strings.Contains(strings.ToLower(filepath.Base(movie.Path)), strings.ToLower(dirName)) {
+					movieID = movie.ID
+					break
+				}
+			}
+		}
+
+		if movieID == 0 {
+			return "", "", fmt.Errorf("could not find movie in Radarr for path: %s", filePath)
+		}
+
+		// Probe history
+		req := &starr.PageReq{PageSize: 100, SortKey: "date", SortDir: starr.SortDescend}
+		req.Set("movieId", strconv.FormatInt(movieID, 10))
+		history, err := client.GetHistoryPageContext(ctx, req)
+		if err != nil {
+			return "", "", err
+		}
+
+		for _, record := range history.Records {
+			if record.DownloadID != "" && (record.EventType == "movieFileImported" || record.EventType == "downloadFolderImported" || record.EventType == "grabbed") {
+				return record.DownloadID, instanceName, nil
+			}
+		}
+
+	case "sonarr":
+		client, err := m.clients.GetOrCreateSonarrClient(instanceName, instance.URL, instance.APIKey)
+		if err != nil {
+			return "", "", err
+		}
+
+		seriesList, err := m.data.GetSeries(ctx, client, instanceName)
+		if err != nil {
+			return "", "", err
+		}
+
+		var seriesID int64
+		dirName := filepath.Base(filepath.Dir(filepath.Dir(filePath)))
+		if strings.HasPrefix(filePath, "/complete/tv/") {
+			dirName = filepath.Base(filepath.Dir(filePath))
+		}
+
+		for _, series := range seriesList {
+			if strings.Contains(filePath, series.Path) || 
+				strings.Contains(filePath, filepath.Base(series.Path)) ||
+				strings.Contains(strings.ToLower(series.Title), strings.ToLower(dirName)) ||
+				strings.Contains(strings.ToLower(filepath.Base(series.Path)), strings.ToLower(dirName)) {
+				seriesID = series.ID
+				break
+			}
+		}
+
+		if seriesID == 0 {
+			return "", "", fmt.Errorf("could not find series in Sonarr for path: %s", filePath)
+		}
+
+		// Probe history
+		req := &starr.PageReq{PageSize: 200, SortKey: "date", SortDir: starr.SortDescend}
+		req.Set("seriesId", strconv.FormatInt(seriesID, 10))
+		history, err := client.GetHistoryPageContext(ctx, req)
+		if err != nil {
+			return "", "", err
+		}
+
+		// First pass: try to find a matching filename in the history record data if available
+		fileName := filepath.Base(filePath)
+		for _, record := range history.Records {
+			if record.DownloadID != "" && (record.EventType == "downloadFolderImported" || record.EventType == "grabbed") {
+				// If we find a record, check if it's the right one (best effort)
+				if strings.Contains(record.SourceTitle, fileName) || strings.Contains(fileName, record.SourceTitle) {
+					return record.DownloadID, instanceName, nil
+				}
+			}
+		}
+
+		// Second pass: just return the most recent GUID for this series if no filename match found
+		for _, record := range history.Records {
+			if record.DownloadID != "" {
+				return record.DownloadID, instanceName, nil
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("no GUID found in history for path: %s", filePath)
 }

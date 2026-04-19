@@ -32,10 +32,12 @@ func setupQueueSchema(t *testing.T, db *sql.DB) {
 			category TEXT DEFAULT NULL,
 			file_size BIGINT DEFAULT NULL,
 			target_path TEXT DEFAULT NULL,
+			instance_name TEXT DEFAULT NULL,
 			UNIQUE(nzb_path)
 		);
 
 		CREATE INDEX idx_queue_download_id ON import_queue(download_id);
+		CREATE INDEX idx_queue_instance_name ON import_queue(instance_name);
 		CREATE INDEX idx_queue_status_priority ON import_queue(status, priority, created_at);
 		CREATE INDEX idx_queue_batch_id ON import_queue(batch_id);
 		CREATE INDEX idx_queue_status ON import_queue(status);

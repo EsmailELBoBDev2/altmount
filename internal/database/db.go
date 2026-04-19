@@ -156,6 +156,11 @@ func (db *DB) Connection() *sql.DB {
 	return db.conn
 }
 
+// MainRepository returns the main database repository.
+func (db *DB) MainRepository() *Repository {
+	return NewRepository(db.conn, db.dialect.d)
+}
+
 // UpdateConnectionPool adjusts the database connection pool settings based on worker count.
 func (db *DB) UpdateConnectionPool(workerCount int) {
 	if workerCount <= 0 {

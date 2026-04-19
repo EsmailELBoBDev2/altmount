@@ -392,6 +392,8 @@ type ArrsConfig struct {
 	CleanupAutomaticImportFailure  *bool                `yaml:"cleanup_automatic_import_failure" mapstructure:"cleanup_automatic_import_failure" json:"cleanup_automatic_import_failure,omitempty"`
 	QueueCleanupGracePeriodMinutes int                  `yaml:"queue_cleanup_grace_period_minutes" mapstructure:"queue_cleanup_grace_period_minutes" json:"queue_cleanup_grace_period_minutes,omitempty"`
 	QueueCleanupAllowlist          []IgnoredMessage     `yaml:"queue_cleanup_allowlist" mapstructure:"queue_cleanup_allowlist" json:"queue_cleanup_allowlist,omitempty"`
+	HarvestDownloadIDsEnabled      *bool                `yaml:"harvest_download_ids_enabled" mapstructure:"harvest_download_ids_enabled" json:"harvest_download_ids_enabled,omitempty"`
+	HarvestDownloadIDsIntervalHours int                  `yaml:"harvest_download_ids_interval_hours" mapstructure:"harvest_download_ids_interval_hours" json:"harvest_download_ids_interval_hours,omitempty"`
 }
 
 // ArrsInstanceConfig represents a single arrs instance configuration

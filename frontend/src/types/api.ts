@@ -57,11 +57,15 @@ export interface ProgressUpdate {
 
 export interface ImportHistoryItem {
 	id: number;
+	download_id?: string;
 	nzb_name: string;
 	file_name: string;
 	virtual_path: string;
 	library_path?: string;
 	category?: string;
+	instance_name?: string;
+	metadata?: string;
+	status: string;
 	file_size: number;
 	completed_at: string;
 }

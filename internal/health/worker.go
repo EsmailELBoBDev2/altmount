@@ -25,6 +25,7 @@ import (
 // ARRsRepairService abstracts the ARR repair operations needed by HealthWorker.
 type ARRsRepairService interface {
 	TriggerFileRescan(ctx context.Context, pathForRescan string, relativePath string) error
+	FindDownloadIDByPath(ctx context.Context, filePath string) (string, string, error)
 }
 
 // WorkerStatus represents the current status of the health worker
@@ -895,25 +896,41 @@ func (hw *HealthWorker) resolvePathForRescan(item *database.FileHealth) string {
 // no longer tracked by ARR (zombie or orphan). Errors are logged but not returned because
 // cleanup is best-effort.
 func (hw *HealthWorker) cleanupZombieRecord(ctx context.Context, item *database.FileHealth) {
+	cfg := hw.configGetter()
+
 	// Delete library symlink/STRM if it exists
 	if item.LibraryPath != nil && *item.LibraryPath != "" {
-		if err := os.Remove(*item.LibraryPath); err != nil && !os.IsNotExist(err) {
-			slog.ErrorContext(ctx, "Failed to delete library file during zombie cleanup",
-				"path", *item.LibraryPath, "error", err)
+		cleanLibPath := filepath.Clean(*item.LibraryPath)
+		cleanMount := ""
+		if cfg.MountPath != "" {
+			cleanMount = filepath.Clean(cfg.MountPath)
+		}
+		cleanLibDir := ""
+		if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+			cleanLibDir = filepath.Clean(*cfg.Health.LibraryDir)
+		}
+
+		// Safety check: Never delete the entire mount root or library root
+		if cleanLibPath != cleanMount && cleanLibPath != cleanLibDir && cleanLibPath != "." && cleanLibPath != "/" {
+			if err := os.Remove(*item.LibraryPath); err != nil && !os.IsNotExist(err) {
+				slog.ErrorContext(ctx, "Failed to delete library file during zombie cleanup",
+					"path", *item.LibraryPath, "error", err)
+			}
+		} else {
+			slog.WarnContext(ctx, "Refusing to delete library path that matches root directory", "path", *item.LibraryPath)
 		}
 	}
 
-	if delErr := hw.healthRepo.DeleteHealthRecord(ctx, item.FilePath); delErr != nil {
-		slog.ErrorContext(ctx, "Failed to delete health record during cleanup", "file_path", item.FilePath, "error", delErr)
+	if err := hw.healthRepo.DeleteHealthRecord(ctx, item.FilePath); err != nil {
+		slog.ErrorContext(ctx, "Failed to delete health record during cleanup", "file_path", item.FilePath, "error", err)
 	}
 
-	cfg := hw.configGetter()
 	relativePath := strings.TrimPrefix(item.FilePath, cfg.MountPath)
 	relativePath = strings.TrimPrefix(relativePath, "/")
 
 	deleteSourceNzb := cfg.Metadata.ShouldDeleteSourceNzb()
-	if delMetaErr := hw.metadataService.DeleteFileMetadataWithSourceNzb(ctx, relativePath, deleteSourceNzb); delMetaErr != nil {
-		slog.ErrorContext(ctx, "Failed to delete metadata during cleanup", "file_path", item.FilePath, "error", delMetaErr)
+	if err := hw.metadataService.DeleteFileMetadataWithSourceNzb(ctx, relativePath, deleteSourceNzb); err != nil {
+		slog.ErrorContext(ctx, "Failed to delete metadata during cleanup", "file_path", item.FilePath, "error", err)
 	}
 }
 
@@ -954,6 +971,24 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 			return repairOutcomeRegenerated, nil
 		} else {
 			slog.WarnContext(ctx, "Regeneration attempt failed, proceeding with normal repair", "file_path", filePath, "error", regenErr)
+		}
+	}
+
+	// Force DownloadID harvest if missing before triggering repair
+	if item.DownloadID == nil || *item.DownloadID == "" {
+		slog.InfoContext(ctx, "Corrupted file missing GUID - attempting on-the-fly surgical harvest", "file_path", filePath)
+		if id, _, harvestErr := hw.arrsService.FindDownloadIDByPath(ctx, filePath); harvestErr == nil && id != "" {
+			slog.InfoContext(ctx, "Surgically harvested GUID during repair sequence", "file_path", filePath, "download_id", id)
+			item.DownloadID = &id
+			// Update the database so future attempts use this ID
+			_ = hw.healthRepo.UpdateHealthDownloadID(ctx, item.ID, id)
+			_ = hw.importerService.AddImportHistory(ctx, &database.ImportHistory{
+				DownloadID:  &id,
+				FileName:    filepath.Base(filePath),
+				VirtualPath: filePath,
+				Status:      database.ImportStatusCompleted,
+				CompletedAt: time.Now(),
+			})
 		}
 	}
 

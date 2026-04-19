@@ -435,6 +435,11 @@ func (ms *MetadataService) DeleteFileMetadataWithSourceNzb(ctx context.Context, 
 
 // DeleteDirectory deletes a metadata directory and all its contents
 func (ms *MetadataService) DeleteDirectory(virtualPath string) error {
+	// Guard against empty path or root path
+	if virtualPath == "" || virtualPath == "." || virtualPath == "/" {
+		return nil
+	}
+
 	// Purge all cached entries under this directory
 	prefix := virtualPath + string(filepath.Separator)
 	for _, key := range ms.liteCache.Keys() {

@@ -57,6 +57,7 @@ type ArrsWebhookRequest struct {
 	EpisodeFile struct {
 		Path string `json:"path"`
 	} `json:"episodeFile"`
+	DownloadId   string           `json:"downloadId,omitempty"`
 	DeletedFiles ArrsDeletedFiles `json:"deletedFiles,omitempty"`
 }
 
@@ -186,18 +187,6 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 				filesToDelete = append(filesToDelete, deleted.Path)
 			}
 		}
-	case "MovieDelete", "ArtistDelete", "AuthorDelete":
-		if req.Movie.FolderPath != "" {
-			dirsToDelete = append(dirsToDelete, req.Movie.FolderPath)
-		} else if req.Artist.Path != "" {
-			dirsToDelete = append(dirsToDelete, req.Artist.Path)
-		} else if req.Author.Path != "" {
-			dirsToDelete = append(dirsToDelete, req.Author.Path)
-		}
-	case "SeriesDelete":
-		if req.Series.Path != "" {
-			dirsToDelete = append(dirsToDelete, req.Series.Path)
-		}
 	case "MovieFileDelete":
 		if req.MovieFile.Path != "" {
 			filesToDelete = append(filesToDelete, req.MovieFile.Path)
@@ -280,6 +269,12 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 				}
 			}
 		}
+
+		// Ensure it always starts with a slash for consistent DB storage
+		if !strings.HasPrefix(normalizedPath, "/") {
+			normalizedPath = "/" + normalizedPath
+		}
+
 		return normalizedPath
 	}
 
@@ -449,11 +444,54 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 
 			// Add to health check (pending status) with high priority (Next) to ensure it's processed right away
 			cfg := s.configManager.GetConfigGetter()()
-			err := s.healthRepo.AddFileToHealthCheckWithMetadata(c.Context(), normalizedPath, &path, cfg.GetMaxRetries(), cfg.GetMaxRepairRetries(), sourceNzb, database.HealthPriorityNext, releaseDate)
+			var downloadID *string
+			if req.DownloadId != "" {
+				downloadID = &req.DownloadId
+			}
+			err := s.healthRepo.AddFileToHealthCheckWithMetadata(c.Context(), normalizedPath, &path, cfg.GetMaxRetries(), cfg.GetMaxRepairRetries(), sourceNzb, downloadID, database.HealthPriorityNext, releaseDate)
 			if err != nil {
 				slog.ErrorContext(c.Context(), "Failed to add webhook file to health check", "path", normalizedPath, "error", err)
 			} else {
 				slog.InfoContext(c.Context(), "Added file to health check queue from webhook with high priority", "path", normalizedPath)
+			}
+
+			// PROACTIVE: Update persistent history with DownloadID from webhook if available
+			if req.DownloadId != "" && s.queueRepo != nil {
+				nzbName := ""
+				if sourceNzb != nil {
+					nzbName = filepath.Base(*sourceNzb)
+				}
+				if nzbName == "" {
+					nzbName = filepath.Base(normalizedPath)
+				}
+
+				var cat *string
+				if req.Series.Path != "" {
+					c := "tv"
+					cat = &c
+				} else if req.Movie.FolderPath != "" {
+					c := "movies"
+					cat = &c
+				}
+
+				// Strategy: Try to upsert by full path first
+				history := &database.ImportHistory{
+					DownloadID:  &req.DownloadId,
+					NzbName:     nzbName,
+					FileName:    filepath.Base(normalizedPath),
+					VirtualPath: normalizedPath,
+					Category:    cat,
+					CompletedAt: time.Now(),
+					Status:      database.ImportStatusGrabbed, // Use 'grabbed' for webhook stage
+				}
+				_ = s.queueRepo.UpsertImportHistory(c.Context(), history)
+
+				// Also try to upsert by parent directory (many history items are keyed by the release folder)
+				parentPath := filepath.Dir(normalizedPath)
+				if parentPath != "/" && parentPath != "." {
+					history.VirtualPath = parentPath
+					_ = s.queueRepo.UpsertImportHistory(c.Context(), history)
+				}
 			}
 		}
 	}

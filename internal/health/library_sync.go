@@ -1121,8 +1121,14 @@ func (lsw *LibrarySyncWorker) processMetadataForSync(
 
 	cfg := lsw.configGetter()
 
+	// Standardize path to always have a leading slash
+	vPath := path
+	if !strings.HasPrefix(vPath, "/") {
+		vPath = "/" + vPath
+	}
+
 	return &database.AutomaticHealthCheckRecord{
-		FilePath:         path,
+		FilePath:         vPath,
 		LibraryPath:      libraryPath,
 		ReleaseDate:      &releaseDateAsTime,
 		ScheduledCheckAt: &scheduledCheckAt,

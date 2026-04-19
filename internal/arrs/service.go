@@ -33,6 +33,8 @@ type Service struct {
 	configGetter  config.ConfigGetter
 	configManager model.ConfigManager
 	userRepo      *database.UserRepository
+	repo          *database.Repository
+	healthRepo    *database.HealthRepository
 
 	instances *instances.Manager
 	clients   *clients.Manager
@@ -43,18 +45,20 @@ type Service struct {
 }
 
 // NewService creates a new arrs service for health monitoring and file repair
-func NewService(configGetter config.ConfigGetter, configManager model.ConfigManager, userRepo *database.UserRepository, queueRepo *database.Repository) *Service {
+func NewService(configGetter config.ConfigGetter, configManager model.ConfigManager, userRepo *database.UserRepository, repo *database.Repository, healthRepo *database.HealthRepository) *Service {
 	instManager := instances.NewManager(configGetter, configManager)
 	clientManager := clients.NewManager()
 	dataManager := data.NewManager()
 	scannerManager := scanner.NewManager(configGetter, instManager, clientManager, dataManager)
-	workerManager := worker.NewWorker(configGetter, instManager, clientManager, queueRepo)
+	workerManager := worker.NewWorker(configGetter, instManager, clientManager, repo, healthRepo)
 	registrarManager := registrar.NewManager(instManager, clientManager)
 
 	return &Service{
 		configGetter:  configGetter,
 		configManager: configManager,
 		userRepo:      userRepo,
+		repo:          repo,
+		healthRepo:    healthRepo,
 		instances:     instManager,
 		clients:       clientManager,
 		data:          dataManager,
@@ -98,6 +102,11 @@ func (s *Service) RegisterInstance(ctx context.Context, arrURL, apiKey string) e
 	}
 
 	return nil
+}
+
+
+func (s *Service) FindDownloadIDByPath(ctx context.Context, filePath string) (string, string, error) {
+	return s.scanner.FindDownloadIDByPath(ctx, filePath)
 }
 
 // GetFirstAdminAPIKey retrieves the API key of the first admin user
@@ -253,3 +262,4 @@ func (s *Service) GetHealth(ctx context.Context) (map[string]any, error) {
 
 	return results, nil
 }
+

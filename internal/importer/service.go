@@ -148,6 +148,7 @@ func (s *Service) GetPostProcessor() *postprocessor.Coordinator {
 type Service struct {
 	config          ServiceConfig
 	database        *database.DB              // Database for processing queue
+	repo            *database.Repository      // Main repository for database operations
 	metadataService *metadata.MetadataService // Metadata service for file processing
 	processor       *Processor
 	postProcessor   *postprocessor.Coordinator    // Post-import processing coordinator
@@ -209,6 +210,7 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		config:          config,
 		metadataService: metadataService,
 		database:        database,
+		repo:            database.MainRepository(),
 		processor:       processor,
 		postProcessor:   postProc,
 		rcloneClient:    rcloneClient,
@@ -260,7 +262,7 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 
 // AddImportHistory records a successful file import in persistent history
 func (s *Service) AddImportHistory(ctx context.Context, history *database.ImportHistory) error {
-	return s.database.Repository.AddImportHistory(ctx, history)
+	return s.repo.UpsertImportHistory(ctx, history)
 }
 
 // Start starts the NZB import service (queue workers only, manual scanning available via API)
@@ -707,7 +709,7 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 		}
 	}
 
-	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles, item.Category, item.Metadata)
+	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles, item.Category, item.Metadata, item.DownloadID, item.InstanceName)
 }
 
 func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, basePath *string) string {
@@ -1393,7 +1395,7 @@ func (s *Service) RegenerateMetadata(ctx context.Context, mountRelativePath stri
 
 	// Re-process the NZB file. We use a dummy queue ID.
 	// This will overwrite the existing .meta file.
-	_, _, err = s.processor.ProcessNzbFile(ctx, foundNzbPath, "", 0, nil, &virtualDir, nil, nil, nil)
+	_, _, err = s.processor.ProcessNzbFile(ctx, foundNzbPath, "", 0, nil, &virtualDir, nil, nil, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to re-process NZB: %w", err)
 	}

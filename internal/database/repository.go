@@ -1032,15 +1032,25 @@ func (r *Repository) UpdateQueueItemsPriorityBulk(ctx context.Context, ids []int
 
 // AddImportHistory records a successful file import in the persistent history table
 func (r *Repository) AddImportHistory(ctx context.Context, history *ImportHistory) error {
+	return r.UpsertImportHistory(ctx, history)
+}
+
+// UpsertImportHistory records or updates a file import in the persistent history table
+func (r *Repository) UpsertImportHistory(ctx context.Context, history *ImportHistory) error {
+	// Strategy: Use INSERT OR REPLACE with the unique key (download_id, virtual_path).
+	// This is the most reliable way in SQLite to ensure we have a record without duplicates.
 	query := `
-		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT OR REPLACE INTO import_history (
+			download_id, nzb_id, nzb_name, file_name, file_size, 
+			virtual_path, category, metadata, instance_name, status, completed_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		history.DownloadID, history.NzbID, history.NzbName, history.FileName, history.FileSize,
-		history.VirtualPath, history.Category)
+		history.VirtualPath, history.Category, history.Metadata, history.InstanceName, history.Status)
+	
 	if err != nil {
-		return fmt.Errorf("failed to add import history: %w", err)
+		return fmt.Errorf("failed to upsert import history: %w", err)
 	}
 	return nil
 }
@@ -1048,7 +1058,7 @@ func (r *Repository) AddImportHistory(ctx context.Context, history *ImportHistor
 // GetImportHistoryByDownloadID retrieves an import history item by its DownloadID
 func (r *Repository) GetImportHistoryByDownloadID(ctx context.Context, downloadID string) (*ImportHistory, error) {
 	query := `
-		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.completed_at
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.instance_name, h.status, h.completed_at
 		FROM import_history h
 		LEFT JOIN file_health f ON TRIM(h.virtual_path, '/') = TRIM(f.file_path, '/')
 		WHERE h.download_id = ?
@@ -1056,7 +1066,7 @@ func (r *Repository) GetImportHistoryByDownloadID(ctx context.Context, downloadI
 	`
 
 	var h ImportHistory
-	err := r.db.QueryRowContext(ctx, query, downloadID).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.CompletedAt)
+	err := r.db.QueryRowContext(ctx, query, downloadID).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.InstanceName, &h.Status, &h.CompletedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1070,7 +1080,7 @@ func (r *Repository) GetImportHistoryByDownloadID(ctx context.Context, downloadI
 // GetImportHistoryByPath retrieves an import history item by its virtual path
 func (r *Repository) GetImportHistoryByPath(ctx context.Context, virtualPath string) (*ImportHistory, error) {
 	query := `
-		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.completed_at
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.instance_name, h.status, h.completed_at
 		FROM import_history h
 		LEFT JOIN file_health f ON TRIM(h.virtual_path, '/') = TRIM(f.file_path, '/')
 		WHERE TRIM(h.virtual_path, '/') = TRIM(?, '/')
@@ -1078,7 +1088,7 @@ func (r *Repository) GetImportHistoryByPath(ctx context.Context, virtualPath str
 	`
 
 	var h ImportHistory
-	err := r.db.QueryRowContext(ctx, query, virtualPath).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.CompletedAt)
+	err := r.db.QueryRowContext(ctx, query, virtualPath).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.InstanceName, &h.Status, &h.CompletedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1090,14 +1100,21 @@ func (r *Repository) GetImportHistoryByPath(ctx context.Context, virtualPath str
 }
 
 // ListImportHistory retrieves import history items with optional filtering and pagination
+// It deduplicates items by download_id, prioritizing 'completed' status.
 func (r *Repository) ListImportHistory(ctx context.Context, limit, offset int, search string, category string) ([]*ImportHistory, error) {
 	query := `
-		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.completed_at
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.instance_name, h.status, h.completed_at
 		FROM import_history h
 		LEFT JOIN file_health f ON h.virtual_path = f.file_path
-		WHERE (? = '' OR h.nzb_name LIKE ? OR h.file_name LIKE ? OR h.virtual_path LIKE ?)
-		  AND (? = '' OR LOWER(h.category) = LOWER(?))
-		ORDER BY h.completed_at DESC
+		WHERE h.id IN (
+			SELECT id FROM (
+				SELECT id, ROW_NUMBER() OVER (PARTITION BY download_id ORDER BY CASE WHEN status = 'completed' THEN 0 ELSE 1 END, completed_at DESC) as rn
+				FROM import_history
+				WHERE (? = '' OR nzb_name LIKE ? OR file_name LIKE ? OR virtual_path LIKE ?)
+				  AND (? = '' OR LOWER(category) = LOWER(?))
+			) WHERE rn = 1
+		)
+		ORDER BY completed_at DESC
 		LIMIT ? OFFSET ?
 	`
 
@@ -1111,7 +1128,7 @@ func (r *Repository) ListImportHistory(ctx context.Context, limit, offset int, s
 	var history []*ImportHistory
 	for rows.Next() {
 		var h ImportHistory
-		err := rows.Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.CompletedAt)
+		err := rows.Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.InstanceName, &h.Status, &h.CompletedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan import history: %w", err)
 		}
@@ -1131,7 +1148,7 @@ func (r *Repository) ListRecentImportHistory(ctx context.Context, minutes int, c
 	}
 
 	query := fmt.Sprintf(`
-		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.completed_at
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.instance_name, h.status, h.completed_at
 		FROM import_history h
 		LEFT JOIN file_health f ON TRIM(h.virtual_path, '/') = TRIM(f.file_path, '/')
 		WHERE h.completed_at >= %s
@@ -1148,7 +1165,7 @@ func (r *Repository) ListRecentImportHistory(ctx context.Context, minutes int, c
 	var history []*ImportHistory
 	for rows.Next() {
 		var h ImportHistory
-		err := rows.Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.CompletedAt)
+		err := rows.Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.InstanceName, &h.Status, &h.CompletedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan import history: %w", err)
 		}
@@ -1344,14 +1361,14 @@ func (r *Repository) GetImportHistory(ctx context.Context, days int) ([]*ImportD
 // GetImportHistoryItem retrieves a specific import history item by ID
 func (r *Repository) GetImportHistoryItem(ctx context.Context, id int64) (*ImportHistory, error) {
 	query := `
-		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.completed_at
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.instance_name, h.status, h.completed_at
 		FROM import_history h
 		LEFT JOIN file_health f ON h.virtual_path = f.file_path
 		WHERE h.id = ?
 	`
 
 	var h ImportHistory
-	err := r.db.QueryRowContext(ctx, query, id).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.CompletedAt)
+	err := r.db.QueryRowContext(ctx, query, id).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.InstanceName, &h.Status, &h.CompletedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -1775,4 +1792,120 @@ func (r *Repository) GetExpiredStremioQueueItems(ctx context.Context, ttlHours i
 	}
 
 	return items, rows.Err()
+}
+
+// GetHealthItemsWithoutDownloadID finds files that are missing external tracking IDs
+func (r *Repository) GetHealthItemsWithoutDownloadID(ctx context.Context, limit int) ([]*FileHealth, error) {
+	query := `
+		SELECT id, file_path, status, last_error, retry_count, max_retries, created_at, updated_at
+		FROM file_health 
+		WHERE (download_id IS NULL OR download_id = '') 
+		AND status IN ('healthy', 'pending')
+		ORDER BY created_at DESC 
+		LIMIT ?
+	`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []*FileHealth
+	for rows.Next() {
+		var h FileHealth
+		if err := rows.Scan(&h.ID, &h.FilePath, &h.Status, &h.LastError, &h.RetryCount, &h.MaxRetries, &h.CreatedAt, &h.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, &h)
+	}
+	return items, nil
+}
+
+// UpdateFileHealthDownloadID updates a specific record with its external tracking ID
+func (r *Repository) UpdateFileHealthDownloadID(ctx context.Context, filePath string, downloadID string) error {
+	query := "UPDATE file_health SET download_id = ?, updated_at = datetime('now') WHERE file_path = ?"
+	_, err := r.db.ExecContext(ctx, query, downloadID, filePath)
+	return err
+}
+
+// FindDownloadIDForPath searches for a path in the media_files cross-reference table
+func (r *Repository) FindDownloadIDForPath(ctx context.Context, filePath string) (string, string, error) {
+	// Standardize path: remove leading slash for the LIKE check if it exists
+	searchPath := strings.TrimPrefix(filePath, "/")
+	
+	// Try both exact match and suffix match to handle slash inconsistencies
+	query := `
+		SELECT external_id, instance_name 
+		FROM media_files 
+		WHERE file_path = ? 
+		   OR file_path = ? 
+		   OR file_path LIKE ?
+		LIMIT 1
+	`
+	var extID int64
+	var instanceName string
+	err := r.db.QueryRowContext(ctx, query, filePath, "/"+searchPath, "%"+searchPath).Scan(&extID, &instanceName)
+	if err != nil {
+		return "", "", err
+	}
+	return fmt.Sprintf("%d", extID), instanceName, nil
+}
+
+
+// GetHistoryMissingDownloadID retrieves history items that are missing a DownloadID
+func (r *Repository) GetHistoryMissingDownloadID(ctx context.Context, limit int) ([]*ImportHistory, error) {
+	query := `
+		SELECT id, download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, completed_at
+		FROM import_history
+		WHERE download_id IS NULL OR download_id = ''
+		ORDER BY completed_at DESC
+		LIMIT ?
+	`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list history missing download_id: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*ImportHistory
+	for rows.Next() {
+		var h ImportHistory
+		err := rows.Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.Category, &h.CompletedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan history record: %w", err)
+		}
+		items = append(items, &h)
+	}
+	return items, nil
+}
+
+// UpdateDownloadIDByPath updates the download_id for a history record by its virtual path
+func (r *Repository) UpdateDownloadIDByPath(ctx context.Context, virtualPath string, downloadID string, instanceName string) error {
+	query := `
+		UPDATE import_history 
+		SET download_id = ?, instance_name = COALESCE(?, instance_name)
+		WHERE virtual_path = ? OR virtual_path = ?
+	`
+	// Try both with and without leading slash for resilience
+	path1 := virtualPath
+	path2 := strings.TrimPrefix(virtualPath, "/")
+	if !strings.HasPrefix(path1, "/") {
+		path1 = "/" + path1
+	}
+
+	_, err := r.db.ExecContext(ctx, query, downloadID, instanceName, path1, path2)
+	return err
+}
+
+// SetSystemState updates or creates a system state record
+func (r *Repository) SetSystemState(ctx context.Context, key string, value string) error {
+	query := `
+		INSERT INTO system_state (key, value, updated_at)
+		VALUES (?, ?, datetime('now'))
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value,
+			updated_at = datetime('now')
+	`
+	_, err := r.db.ExecContext(ctx, query, key, value)
+	return err
 }

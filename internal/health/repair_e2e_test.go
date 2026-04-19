@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"testing"
@@ -43,23 +44,27 @@ func (m *mockPoolManager) ResetProviderQuota(_ context.Context, _ nntppool.Provi
 	return nil
 }
 
-// mockARRsService captures TriggerFileRescan calls and returns a configurable error.
-type mockARRsService struct {
+// MockARRsService captures TriggerFileRescan calls and returns a configurable error.
+type MockARRsService struct {
 	mu        sync.Mutex
-	calls     []triggerCall
-	returnErr error
+	Calls     []TriggerCall
+	ReturnErr error
 }
 
-type triggerCall struct {
-	pathForRescan string
-	relativePath  string
+type TriggerCall struct {
+	PathForRescan string
+	RelativePath  string
 }
 
-func (m *mockARRsService) TriggerFileRescan(_ context.Context, pathForRescan string, relativePath string) error {
+func (m *MockARRsService) TriggerFileRescan(_ context.Context, pathForRescan string, relativePath string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.calls = append(m.calls, triggerCall{pathForRescan: pathForRescan, relativePath: relativePath})
-	return m.returnErr
+	m.Calls = append(m.Calls, TriggerCall{PathForRescan: pathForRescan, RelativePath: relativePath})
+	return m.ReturnErr
+}
+
+func (m *MockARRsService) FindDownloadIDByPath(_ context.Context, _ string) (string, string, error) {
+	return "", "", fmt.Errorf("not found in mock")
 }
 
 // mockImportService implements importer.ImportService for testing.
@@ -77,7 +82,7 @@ type repairTestEnv struct {
 	healthRepo      *database.HealthRepository
 	metadataService *metadata.MetadataService
 	healthChecker   *HealthChecker
-	mockARRs        *mockARRsService
+	mockARRs        *MockARRsService
 	hw              *HealthWorker
 }
 
@@ -135,7 +140,7 @@ func newRepairTestEnv(t *testing.T, tempDir string, arrsErr error) *repairTestEn
 
 	configManager := config.NewManager(cfg, "")
 
-	mockARRs := &mockARRsService{returnErr: arrsErr}
+	mockARRs := &MockARRsService{ReturnErr: arrsErr}
 	mockImporter := &mockImportService{}
 
 	healthChecker := NewHealthChecker(
@@ -231,11 +236,12 @@ func TestE2E_FileRepairTriggered_ARRResearchCalled(t *testing.T) {
 
 	// ARR should have been called exactly once with the library path.
 	env.mockARRs.mu.Lock()
-	calls := env.mockARRs.calls
+	calls := env.mockARRs.Calls
 	env.mockARRs.mu.Unlock()
 
 	require.Len(t, calls, 1, "expected exactly one TriggerFileRescan call")
-	assert.Equal(t, libraryPath, calls[0].pathForRescan, "pathForRescan should be the library_path")
+	assert.Equal(t, libraryPath, calls[0].PathForRescan, "pathForRescan should be the library_path")
+
 
 	// DB status should be repair_triggered.
 	fh, err := env.healthRepo.GetFileHealth(ctx, filePath)
@@ -274,7 +280,7 @@ func TestE2E_FileRepairTriggered_FullRetryFlow(t *testing.T) {
 	require.NotNil(t, fh)
 	assert.Equal(t, database.HealthStatusPending, fh.Status, "should still be pending after cycle 1")
 	assert.Equal(t, 1, fh.RetryCount, "retry_count should be 1 after cycle 1")
-	assert.Empty(t, env.mockARRs.calls, "ARR should not be called after cycle 1")
+	assert.Empty(t, env.mockARRs.Calls, "ARR should not be called after cycle 1")
 
 	// Advance scheduled_check_at so cycle 2 picks the file up.
 	advanceScheduledCheck(t, env.db, filePath)
@@ -286,7 +292,7 @@ func TestE2E_FileRepairTriggered_FullRetryFlow(t *testing.T) {
 	require.NotNil(t, fh)
 	assert.Equal(t, database.HealthStatusPending, fh.Status, "should still be pending after cycle 2")
 	assert.Equal(t, 2, fh.RetryCount, "retry_count should be 2 after cycle 2")
-	assert.Empty(t, env.mockARRs.calls, "ARR should not be called after cycle 2")
+	assert.Empty(t, env.mockARRs.Calls, "ARR should not be called after cycle 2")
 
 	// Advance again for cycle 3.
 	advanceScheduledCheck(t, env.db, filePath)
@@ -295,11 +301,11 @@ func TestE2E_FileRepairTriggered_FullRetryFlow(t *testing.T) {
 	require.NoError(t, env.hw.runHealthCheckCycle(ctx))
 
 	env.mockARRs.mu.Lock()
-	calls := env.mockARRs.calls
+	calls := env.mockARRs.Calls
 	env.mockARRs.mu.Unlock()
 
 	require.Len(t, calls, 1, "expected exactly one TriggerFileRescan call after cycle 3")
-	assert.Equal(t, libraryPath, calls[0].pathForRescan)
+	assert.Equal(t, libraryPath, calls[0].PathForRescan)
 
 	fh, err = env.healthRepo.GetFileHealth(ctx, filePath)
 	require.NoError(t, err)
@@ -334,8 +340,9 @@ func TestE2E_FileRepairTriggered_ARRReturnsAlreadySatisfied(t *testing.T) {
 
 	// ARR was called.
 	env.mockARRs.mu.Lock()
-	callCount := len(env.mockARRs.calls)
+	callCount := len(env.mockARRs.Calls)
 	env.mockARRs.mu.Unlock()
+
 	assert.Equal(t, 1, callCount)
 
 	// Health record must be deleted, not set to repair_triggered.
@@ -366,8 +373,9 @@ func TestE2E_FileRepairTriggered_ARRReturnsPathNotFound(t *testing.T) {
 
 	// ARR was called.
 	env.mockARRs.mu.Lock()
-	callCount := len(env.mockARRs.calls)
+	callCount := len(env.mockARRs.Calls)
 	env.mockARRs.mu.Unlock()
+
 	assert.Equal(t, 1, callCount)
 
 	// Health record must be deleted, not set to repair_triggered.

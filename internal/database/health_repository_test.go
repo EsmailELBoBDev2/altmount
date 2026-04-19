@@ -28,6 +28,7 @@ func setupTestDB(t *testing.T) *HealthRepository {
 			repair_retry_count INTEGER DEFAULT 0,
 			max_repair_retries INTEGER DEFAULT 3,
 			source_nzb_path TEXT,
+			download_id TEXT,
 			error_details TEXT,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -306,7 +307,7 @@ func TestAddFileToHealthCheckWithMetadata_StoresLibraryPath(t *testing.T) {
 	sourceNzb := "Dune.nzb"
 
 	// Add the file
-	err := repo.AddFileToHealthCheckWithMetadata(ctx, filePath, &libraryPath, 3, 3, &sourceNzb, HealthPriorityNormal, nil)
+	err := repo.AddFileToHealthCheckWithMetadata(ctx, filePath, &libraryPath, 3, 3, &sourceNzb, nil, HealthPriorityNormal, nil)
 	require.NoError(t, err)
 
 	// Verify it was stored

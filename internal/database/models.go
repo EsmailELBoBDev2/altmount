@@ -43,8 +43,9 @@ type ImportQueueItem struct {
 	MaxRetries   int           `db:"max_retries"`
 	ErrorMessage *string       `db:"error_message"`
 	BatchID      *string       `db:"batch_id"`
-	Metadata     *string       `db:"metadata"`    // JSON metadata
-	FileSize     *int64        `db:"file_size"`   // Total size in bytes calculated from segments
+	Metadata     *string       `db:"metadata"`      // JSON metadata
+	InstanceName *string       `db:"instance_name"` // ARR instance name
+	FileSize     *int64        `db:"file_size"`     // Total size in bytes calculated from segments
 	TargetPath   *string       `db:"target_path"` // Optional forced symlink destination path
 }
 
@@ -99,6 +100,7 @@ type FileHealth struct {
 	RepairRetryCount int          `db:"repair_retry_count"` // Repair retry count
 	MaxRepairRetries int          `db:"max_repair_retries"` // Max repair retries
 	SourceNzbPath    *string      `db:"source_nzb_path"`
+	DownloadID       *string      `db:"download_id"`
 	ErrorDetails     *string      `db:"error_details"` // JSON error details
 	CreatedAt        time.Time    `db:"created_at"`
 	UpdatedAt        time.Time    `db:"updated_at"`
@@ -153,17 +155,28 @@ type ImportHourlyStat struct {
 	UpdatedAt       time.Time `db:"updated_at"`
 }
 
+// ImportStatus represents the state of a file in the permanent history
+type ImportStatus string
+
+const (
+	ImportStatusGrabbed   ImportStatus = "grabbed"
+	ImportStatusCompleted ImportStatus = "completed"
+	ImportStatusFailed    ImportStatus = "failed"
+)
+
 // ImportHistory represents a persistent record of a single imported file
 type ImportHistory struct {
-	ID          int64     `db:"id"`
-	DownloadID  *string   `db:"download_id"`
-	NzbID       *int64    `db:"nzb_id"` // Nullable if queue item deleted
-	NzbName     string    `db:"nzb_name"`
-	FileName    string    `db:"file_name"`
-	FileSize    int64     `db:"file_size"`
-	VirtualPath string    `db:"virtual_path"`
-	LibraryPath *string   `db:"library_path"` // Added to show final location from file_health
-	Category    *string   `db:"category"`
-	Metadata    *string   `db:"metadata"`
-	CompletedAt time.Time `db:"completed_at"`
+	ID           int64        `db:"id"`
+	DownloadID   *string      `db:"download_id"`
+	NzbID        *int64       `db:"nzb_id"` // Nullable if queue item deleted
+	NzbName      string       `db:"nzb_name"`
+	FileName     string       `db:"file_name"`
+	FileSize     int64        `db:"file_size"`
+	VirtualPath  string       `db:"virtual_path"`
+	LibraryPath  *string      `db:"library_path"` // Added to show final location from file_health
+	Category     *string      `db:"category"`
+	Metadata     *string      `db:"metadata"`
+	InstanceName *string      `db:"instance_name"`
+	Status       ImportStatus `db:"status"`
+	CompletedAt  time.Time    `db:"completed_at"`
 }

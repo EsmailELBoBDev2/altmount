@@ -103,7 +103,7 @@ func TestCleanupZombieRecord_DeletesLibrarySymlink(t *testing.T) {
 		nil, // healthChecker not needed
 		healthRepo,
 		metadataService,
-		&mockARRsService{},
+		&MockARRsService{},
 		&mockImportService{},
 		configManager.GetConfig,
 		nil,
@@ -158,7 +158,7 @@ func TestCleanupZombieRecord_NoLibraryPath(t *testing.T) {
 		nil,
 		healthRepo,
 		metadataService,
-		&mockARRsService{},
+		&MockARRsService{},
 		&mockImportService{},
 		configManager.GetConfig,
 		nil,
