@@ -167,20 +167,7 @@ func (m *Manager) RegisterInstance(ctx context.Context, arrURL, apiKey string) (
 	}
 
 	if !found {
-		switch arrType {
-		case "radarr":
-			category = "movies"
-		case "sonarr":
-			category = "tv"
-		case "lidarr":
-			category = "music"
-		case "readarr":
-			category = "books"
-		case "whisparr":
-			category = "movies"
-		default:
-			return false, fmt.Errorf("unsupported ARR type: %s", arrType)
-		}
+		category = arrType
 	}
 
 	// Generate instance name
@@ -399,18 +386,7 @@ func (m *Manager) categoryUsedByOtherInstance(arrType, category string) bool {
 	for _, instance := range instances {
 		instanceCat := instance.Category
 		if instanceCat == "" {
-			switch arrType {
-			case "radarr":
-				instanceCat = "movies"
-			case "sonarr":
-				instanceCat = "tv"
-			case "lidarr":
-				instanceCat = "music"
-			case "readarr":
-				instanceCat = "books"
-			case "whisparr":
-				instanceCat = "movies"
-			}
+			instanceCat = arrType
 		}
 
 		if instanceCat == category {

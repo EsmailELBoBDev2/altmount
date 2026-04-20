@@ -784,9 +784,6 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 			}
 
 			category := instance.Category
-			if category == "" {
-				category = "movies"
-			}
 
 			dc := &radarr.DownloadClientInput{
 				Name:                     "AltMount Test",
@@ -816,9 +813,6 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 			}
 
 			category := instance.Category
-			if category == "" {
-				category = "tv"
-			}
 
 			dc := &sonarr.DownloadClientInput{
 				Name:                     "AltMount Test",
