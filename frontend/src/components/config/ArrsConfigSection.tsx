@@ -26,16 +26,16 @@ const DEFAULT_NEW_INSTANCE: NewInstanceForm = {
 	type: "radarr",
 	url: "",
 	api_key: "",
-	category: "movies",
+	category: "",
 	enabled: true,
 };
 
-const ARR_TYPES: { type: ArrsType; label: string; color: string; defaultCategory: string }[] = [
-	{ type: "radarr", label: "Radarr", color: "bg-primary", defaultCategory: "movies" },
-	{ type: "sonarr", label: "Sonarr", color: "bg-secondary", defaultCategory: "tv" },
-	{ type: "lidarr", label: "Lidarr", color: "bg-accent", defaultCategory: "music" },
-	{ type: "readarr", label: "Readarr", color: "bg-info", defaultCategory: "books" },
-	{ type: "whisparr", label: "Whisparr", color: "bg-warning", defaultCategory: "movies" },
+const ARR_TYPES: { type: ArrsType; label: string; color: string }[] = [
+	{ type: "radarr", label: "Radarr", color: "bg-primary" },
+	{ type: "sonarr", label: "Sonarr", color: "bg-secondary" },
+	{ type: "lidarr", label: "Lidarr", color: "bg-accent" },
+	{ type: "readarr", label: "Readarr", color: "bg-info" },
+	{ type: "whisparr", label: "Whisparr", color: "bg-warning" },
 ];
 
 export function ArrsConfigSection({
@@ -160,8 +160,7 @@ export function ArrsConfigSection({
 		const instancesKey = `${newInstance.type}_instances` as keyof ArrsConfig;
 		let category = newInstance.category.trim();
 		if (!category) {
-			const arrTypeMeta = ARR_TYPES.find((t) => t.type === newInstance.type);
-			category = arrTypeMeta?.defaultCategory || "movies";
+			category = newInstance.type;
 		}
 		const instances = [
 			...(formData[instancesKey] as ArrsInstanceConfig[]),
@@ -506,7 +505,7 @@ export function ArrsConfigSection({
 				{/* Instances Lists */}
 				{formData.enabled && (
 					<div className="fade-in slide-in-from-top-6 animate-in space-y-10">
-						{ARR_TYPES.map(({ type, label, color, defaultCategory }) => {
+						{ARR_TYPES.map(({ type, label, color }) => {
 							const instancesKey = `${type}_instances` as keyof ArrsConfig;
 							const instances = (formData[instancesKey] || []) as ArrsInstanceConfig[];
 
@@ -523,7 +522,7 @@ export function ArrsConfigSection({
 												setNewInstance({
 													...DEFAULT_NEW_INSTANCE,
 													type,
-													category: defaultCategory,
+													category: "",
 												});
 												setShowAddInstance(true);
 											}}
