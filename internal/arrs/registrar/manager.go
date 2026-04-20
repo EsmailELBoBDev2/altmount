@@ -785,7 +785,11 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 
 			category := instance.Category
 			if category == "" {
-				category = "movies"
+				if instance.Type == "whisparr" {
+					category = "adult"
+				} else {
+					category = "movies"
+				}
 			}
 
 			dc := &radarr.DownloadClientInput{
