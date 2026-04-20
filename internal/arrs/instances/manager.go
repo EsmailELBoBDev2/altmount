@@ -177,7 +177,7 @@ func (m *Manager) RegisterInstance(ctx context.Context, arrURL, apiKey string) (
 		case "readarr":
 			category = "books"
 		case "whisparr":
-			category = "adult"
+			category = "movies"
 		default:
 			return false, fmt.Errorf("unsupported ARR type: %s", arrType)
 		}
@@ -409,7 +409,7 @@ func (m *Manager) categoryUsedByOtherInstance(arrType, category string) bool {
 			case "readarr":
 				instanceCat = "books"
 			case "whisparr":
-				instanceCat = "adult"
+				instanceCat = "movies"
 			}
 		}
 

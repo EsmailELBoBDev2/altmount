@@ -35,7 +35,7 @@ const ARR_TYPES: { type: ArrsType; label: string; color: string; defaultCategory
 	{ type: "sonarr", label: "Sonarr", color: "bg-secondary", defaultCategory: "tv" },
 	{ type: "lidarr", label: "Lidarr", color: "bg-accent", defaultCategory: "music" },
 	{ type: "readarr", label: "Readarr", color: "bg-info", defaultCategory: "books" },
-	{ type: "whisparr", label: "Whisparr", color: "bg-warning", defaultCategory: "adult" },
+	{ type: "whisparr", label: "Whisparr", color: "bg-warning", defaultCategory: "movies" },
 ];
 
 export function ArrsConfigSection({
