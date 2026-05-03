@@ -244,6 +244,27 @@ export function SABnzbdConfigSection({
 										The URL ARR instances use to reach this API.
 									</p>
 								</fieldset>
+
+								<fieldset className="fieldset">
+									<legend className="fieldset-legend font-semibold">History Retention Days</legend>
+									<input
+										type="number"
+										className="input input-bordered w-full bg-base-100 font-mono text-sm"
+										value={formData.history_retention_days ?? ""}
+										readOnly={isReadOnly}
+										placeholder="∞ (keep forever)"
+										min={0}
+										onChange={(e) => {
+											const val = e.target.value;
+											updateFormData({
+												history_retention_days: val === "" ? null : Number.parseInt(val, 10) || 0,
+											});
+										}}
+									/>
+									<p className="label break-words text-base-content/70 text-xs">
+										Auto-remove import history older than this many days. Leave empty to keep forever.
+									</p>
+								</fieldset>
 							</div>
 						</div>
 

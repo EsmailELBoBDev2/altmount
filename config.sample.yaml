@@ -208,6 +208,7 @@ sabnzbd:
       order: 5
       priority: 0
       dir: 'adult'
+  history_retention_days: 30 # Auto-remove import history entries older than N days (0 or omit to keep forever)
   # Fallback configuration for sending failed imports to external SABnzbd
   fallback_host: '' # External SABnzbd URL (e.g., "http://localhost:8080")
   fallback_api_key: '' # External SABnzbd API key

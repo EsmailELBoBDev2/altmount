@@ -1161,10 +1161,12 @@ func (s *Service) handleProcessingFailure(ctx context.Context, item *database.Im
 	}
 }
 
-// runFailedItemCleanup periodically removes stale failed queue items and their NZB files.
+// runFailedItemCleanup periodically removes stale failed queue items and their NZB files,
+// and also purges old import history entries based on history_retention_days.
 func (s *Service) runFailedItemCleanup(ctx context.Context) {
 	// Run once at startup
 	s.cleanupFailedItems(ctx)
+	s.cleanupOldHistory(ctx)
 
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
@@ -1175,6 +1177,7 @@ func (s *Service) runFailedItemCleanup(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.cleanupFailedItems(ctx)
+			s.cleanupOldHistory(ctx)
 		}
 	}
 }
@@ -1218,6 +1221,27 @@ func (s *Service) cleanupFailedItems(ctx context.Context) {
 	s.log.InfoContext(ctx, "Cleaned up stale failed queue items",
 		"count", len(deletedItems),
 		"retention_hours", retentionHours)
+}
+
+// cleanupOldHistory deletes import_history entries older than history_retention_days.
+func (s *Service) cleanupOldHistory(ctx context.Context) {
+	cfg := s.configGetter()
+	if cfg.SABnzbd.HistoryRetentionDays == nil || *cfg.SABnzbd.HistoryRetentionDays <= 0 {
+		return
+	}
+
+	cutoff := time.Now().Add(-time.Duration(*cfg.SABnzbd.HistoryRetentionDays) * 24 * time.Hour)
+	deleted, err := s.database.Repository.DeleteImportHistoryOlderThan(ctx, cutoff)
+	if err != nil {
+		s.log.ErrorContext(ctx, "Failed to cleanup old import history", "error", err)
+		return
+	}
+
+	if deleted > 0 {
+		s.log.InfoContext(ctx, "Cleaned up old import history",
+			"deleted_count", deleted,
+			"retention_days", *cfg.SABnzbd.HistoryRetentionDays)
+	}
 }
 
 // CancelProcessing cancels a processing queue item by cancelling its context

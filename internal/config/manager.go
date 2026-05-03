@@ -377,6 +377,9 @@ type SABnzbdConfig struct {
 	// nzo_id filter. Older entries are still returned when *arr asks for them by
 	// nzo_id. Defaults to 10080 (7 days).
 	HistoryRetentionMinutes int `yaml:"history_retention_minutes" mapstructure:"history_retention_minutes" json:"history_retention_minutes,omitempty"`
+	// HistoryRetentionDays controls how many days of import history to keep.
+	// Entries older than this are deleted automatically. Set to 0 or omit to keep forever.
+	HistoryRetentionDays *int `yaml:"history_retention_days" mapstructure:"history_retention_days" json:"history_retention_days,omitempty"`
 	// Fallback configuration for sending failed imports to external SABnzbd
 	FallbackHost   string `yaml:"fallback_host" mapstructure:"fallback_host" json:"fallback_host"`
 	FallbackAPIKey string `yaml:"fallback_api_key" mapstructure:"fallback_api_key" json:"fallback_api_key"` // Masked in API responses

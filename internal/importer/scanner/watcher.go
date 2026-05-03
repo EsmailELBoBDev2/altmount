@@ -283,8 +283,8 @@ func (w *Watcher) processNzb(ctx context.Context, watchRoot, filePath string) er
 		}
 	}
 
-	// Add to queue
-	priority := database.QueuePriorityNormal
+	// Add to queue, applying the category's configured priority when available.
+	priority := w.categoryQueuePriority(category)
 	item, err := w.queueAdder.AddToQueue(ctx, filePath, relativePath, category, &priority, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to add to queue: %w", err)
@@ -301,4 +301,26 @@ func (w *Watcher) processNzb(ctx context.Context, watchRoot, filePath string) er
 		"queue_id", item.ID)
 
 	return nil
+}
+
+// categoryQueuePriority returns the QueuePriority configured for the given category name.
+// Falls back to QueuePriorityNormal when category is nil or not found in config.
+func (w *Watcher) categoryQueuePriority(category *string) database.QueuePriority {
+	if category == nil {
+		return database.QueuePriorityNormal
+	}
+	cfg := w.configGetter()
+	for _, cat := range cfg.SABnzbd.Categories {
+		if strings.EqualFold(cat.Name, *category) {
+			switch cat.Priority {
+			case 1:
+				return database.QueuePriorityHigh
+			case -1:
+				return database.QueuePriorityLow
+			default:
+				return database.QueuePriorityNormal
+			}
+		}
+	}
+	return database.QueuePriorityNormal
 }

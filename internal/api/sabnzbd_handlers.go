@@ -392,7 +392,13 @@ func (s *Server) handleSABnzbdAddFile(c *fiber.Ctx) error {
 
 	// Add the file to the processing queue using centralized method
 	completeDir := s.configManager.GetConfig().SABnzbd.CompleteDir
-	priority := s.parseSABnzbdPriority(c.FormValue("priority"))
+	requestPriority := c.FormValue("priority")
+	priority := s.parseSABnzbdPriority(requestPriority)
+	// When the caller sends no explicit priority (or SABnzbd's "normal" sentinel),
+	// honour the priority configured on the matched category instead.
+	if requestPriority == "" || requestPriority == "0" {
+		priority = s.categoryQueuePriority(validatedCategory)
+	}
 	_, err = s.importerService.AddToQueue(c.Context(), tempFile, &completeDir, &validatedCategory, &priority, metadataJSON, &downloadID)
 	if err != nil {
 		return s.writeSABnzbdErrorFiber(c, "Failed to add to queue")
@@ -531,7 +537,13 @@ func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
 
 	// Add the file to the processing queue using centralized method
 	completeDir := s.configManager.GetConfig().SABnzbd.CompleteDir
-	priority := s.parseSABnzbdPriority(c.Query("priority"))
+	requestPriorityURL := c.Query("priority")
+	priority := s.parseSABnzbdPriority(requestPriorityURL)
+	// When the caller sends no explicit priority (or SABnzbd's "normal" sentinel),
+	// honour the priority configured on the matched category instead.
+	if requestPriorityURL == "" || requestPriorityURL == "0" {
+		priority = s.categoryQueuePriority(validatedCategory)
+	}
 
 	// Generate or extract stable download ID for tracking
 	// Some indexers provide a GUID in the 'nzbname' or 'name' parameter
@@ -1257,6 +1269,28 @@ func (s *Server) parseSABnzbdPriority(priority string) database.QueuePriority {
 	default:
 		return database.QueuePriorityNormal
 	}
+}
+
+// categoryQueuePriority returns the QueuePriority configured for a category.
+// Falls back to QueuePriorityNormal if the category is not found.
+func (s *Server) categoryQueuePriority(category string) database.QueuePriority {
+	if s.configManager == nil {
+		return database.QueuePriorityNormal
+	}
+	cfg := s.configManager.GetConfig()
+	for _, cat := range cfg.SABnzbd.Categories {
+		if strings.EqualFold(cat.Name, category) {
+			switch cat.Priority {
+			case 1:
+				return database.QueuePriorityHigh
+			case -1:
+				return database.QueuePriorityLow
+			default:
+				return database.QueuePriorityNormal
+			}
+		}
+	}
+	return database.QueuePriorityNormal
 }
 
 // buildCategoryPath builds the directory path for a category

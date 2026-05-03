@@ -876,3 +876,13 @@ func (r *QueueRepository) ClearImportHistorySince(ctx context.Context, since tim
 	// as strict rolling 24h will naturally age out the data.
 	return nil
 }
+
+// DeleteImportHistoryOlderThan deletes import_history rows completed before the given cutoff.
+// Returns the number of rows deleted.
+func (r *QueueRepository) DeleteImportHistoryOlderThan(ctx context.Context, olderThan time.Time) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM import_history WHERE completed_at < ?`, olderThan)
+	if err != nil {
+		return 0, fmt.Errorf("failed to delete old import history: %w", err)
+	}
+	return result.RowsAffected()
+}

@@ -277,6 +277,7 @@ export interface SABnzbdConfig {
 	complete_dir: string;
 	download_client_base_url?: string;
 	categories: SABnzbdCategory[];
+	history_retention_days?: number | null;
 	fallback_host?: string;
 	fallback_api_key?: string; // Obfuscated when returned from API
 	fallback_api_key_set?: boolean; // For display purposes only
